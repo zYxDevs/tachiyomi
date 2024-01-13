@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.data.database.models
 
 import eu.kanade.tachiyomi.source.model.SChapter
 import java.io.Serializable
+import tachiyomi.domain.chapter.model.Chapter as DomainChapter
 
 interface Chapter : SChapter, Serializable {
 
@@ -19,13 +20,24 @@ interface Chapter : SChapter, Serializable {
 
     var source_order: Int
 
-    val isRecognizedNumber: Boolean
-        get() = chapter_number >= 0f
+    var last_modified: Long
+}
 
-    companion object {
-
-        fun create(): Chapter = ChapterImpl().apply {
-            chapter_number = -1f
-        }
-    }
+fun Chapter.toDomainChapter(): DomainChapter? {
+    if (id == null || manga_id == null) return null
+    return DomainChapter(
+        id = id!!,
+        mangaId = manga_id!!,
+        read = read,
+        bookmark = bookmark,
+        lastPageRead = last_page_read.toLong(),
+        dateFetch = date_fetch,
+        sourceOrder = source_order.toLong(),
+        url = url,
+        name = name,
+        dateUpload = date_upload,
+        chapterNumber = chapter_number.toDouble(),
+        scanlator = scanlator,
+        lastModifiedAt = last_modified,
+    )
 }

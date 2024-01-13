@@ -1,72 +1,75 @@
 package eu.kanade.tachiyomi.util
 
 import android.content.Context
-import android.net.Uri
 import android.os.Build
 import eu.kanade.tachiyomi.BuildConfig
-import eu.kanade.tachiyomi.R
-import eu.kanade.tachiyomi.data.notification.NotificationReceiver
-import eu.kanade.tachiyomi.data.notification.Notifications
-import eu.kanade.tachiyomi.util.lang.launchIO
-import eu.kanade.tachiyomi.util.lang.withUIContext
+import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.util.storage.getUriCompat
+import eu.kanade.tachiyomi.util.system.WebViewUtil
 import eu.kanade.tachiyomi.util.system.createFileInCacheDir
-import eu.kanade.tachiyomi.util.system.notificationBuilder
-import eu.kanade.tachiyomi.util.system.notificationManager
+import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
+import tachiyomi.core.util.lang.withNonCancellableContext
+import tachiyomi.core.util.lang.withUIContext
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 
-class CrashLogUtil(private val context: Context) {
+class CrashLogUtil(
+    private val context: Context,
+    private val extensionManager: ExtensionManager = Injekt.get(),
+) {
 
-    private val notificationBuilder = context.notificationBuilder(Notifications.CHANNEL_CRASH_LOGS) {
-        setSmallIcon(R.drawable.ic_tachi)
-    }
+    suspend fun dumpLogs() = withNonCancellableContext {
+        try {
+            val file = context.createFileInCacheDir("tachiyomi_crash_logs.txt")
 
-    fun dumpLogs() {
-        launchIO {
-            try {
-                val file = context.createFileInCacheDir("tachiyomi_crash_logs.txt")
-                Runtime.getRuntime().exec("logcat *:E -d -f ${file.absolutePath}").waitFor()
-                file.appendText(getDebugInfo())
+            file.appendText(getDebugInfo() + "\n\n")
+            getExtensionsInfo()?.let { file.appendText("$it\n\n") }
 
-                showNotification(file.getUriCompat(context))
-            } catch (e: Throwable) {
-                withUIContext { context.toast("Failed to get logs") }
-            }
+            Runtime.getRuntime().exec("logcat *:E -d -f ${file.absolutePath}").waitFor()
+
+            val uri = file.getUriCompat(context)
+            context.startActivity(uri.toShareIntent(context, "text/plain"))
+        } catch (e: Throwable) {
+            withUIContext { context.toast("Failed to get logs") }
         }
     }
 
     fun getDebugInfo(): String {
         return """
             App version: ${BuildConfig.VERSION_NAME} (${BuildConfig.FLAVOR}, ${BuildConfig.COMMIT_SHA}, ${BuildConfig.VERSION_CODE}, ${BuildConfig.BUILD_TIME})
-            Android version: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})
-            Android build ID: ${Build.DISPLAY}
+            Android version: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}; build ${Build.DISPLAY})
             Device brand: ${Build.BRAND}
             Device manufacturer: ${Build.MANUFACTURER}
-            Device name: ${Build.DEVICE}
+            Device name: ${Build.DEVICE} (${Build.PRODUCT})
             Device model: ${Build.MODEL}
-            Device product name: ${Build.PRODUCT}
+            WebView: ${WebViewUtil.getVersion(context)}
         """.trimIndent()
     }
 
-    private fun showNotification(uri: Uri) {
-        context.notificationManager.cancel(Notifications.ID_CRASH_LOGS)
+    private fun getExtensionsInfo(): String? {
+        val availableExtensions = extensionManager.availableExtensionsFlow.value.associateBy { it.pkgName }
 
-        with(notificationBuilder) {
-            setContentTitle(context.getString(R.string.crash_log_saved))
+        val extensionInfoList = extensionManager.installedExtensionsFlow.value
+            .sortedBy { it.name }
+            .mapNotNull {
+                val availableExtension = availableExtensions[it.pkgName]
+                val hasUpdate = (availableExtension?.versionCode ?: 0) > it.versionCode
 
-            clearActions()
-            addAction(
-                R.drawable.ic_folder_24dp,
-                context.getString(R.string.action_open_log),
-                NotificationReceiver.openErrorLogPendingActivity(context, uri)
-            )
-            addAction(
-                R.drawable.ic_share_24dp,
-                context.getString(R.string.action_share),
-                NotificationReceiver.shareCrashLogPendingBroadcast(context, uri, Notifications.ID_CRASH_LOGS)
-            )
+                if (!hasUpdate && !it.isObsolete) return@mapNotNull null
 
-            context.notificationManager.notify(Notifications.ID_CRASH_LOGS, build())
+                """
+                    - ${it.name}
+                      Installed: ${it.versionName} / Available: ${availableExtension?.versionName ?: "?"}
+                      Obsolete: ${it.isObsolete}
+                """.trimIndent()
+            }
+
+        return if (extensionInfoList.isNotEmpty()) {
+            (listOf("Problematic extensions:") + extensionInfoList)
+                .joinToString("\n")
+        } else {
+            null
         }
     }
 }

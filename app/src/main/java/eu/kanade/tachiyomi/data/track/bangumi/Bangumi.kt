@@ -1,33 +1,30 @@
 package eu.kanade.tachiyomi.data.track.bangumi
 
-import android.content.Context
 import android.graphics.Color
-import androidx.annotation.StringRes
+import dev.icerock.moko.resources.StringResource
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.database.models.Track
-import eu.kanade.tachiyomi.data.track.TrackService
+import eu.kanade.tachiyomi.data.track.BaseTracker
 import eu.kanade.tachiyomi.data.track.model.TrackSearch
-import kotlinx.serialization.decodeFromString
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.toImmutableList
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import tachiyomi.i18n.MR
 import uy.kohesive.injekt.injectLazy
+import tachiyomi.domain.track.model.Track as DomainTrack
 
-class Bangumi(private val context: Context, id: Int) : TrackService(id) {
+class Bangumi(id: Long) : BaseTracker(id, "Bangumi") {
 
     private val json: Json by injectLazy()
 
     private val interceptor by lazy { BangumiInterceptor(this) }
 
-    private val api by lazy { BangumiApi(client, interceptor) }
+    private val api by lazy { BangumiApi(id, client, interceptor) }
 
-    @StringRes
-    override fun nameRes() = R.string.tracker_bangumi
+    override fun getScoreList(): ImmutableList<String> = SCORE_LIST
 
-    override fun getScoreList(): List<String> {
-        return IntRange(0, 10).map(Int::toString)
-    }
-
-    override fun displayScore(track: Track): String {
+    override fun displayScore(track: DomainTrack): String {
         return track.score.toInt().toString()
     }
 
@@ -38,7 +35,11 @@ class Bangumi(private val context: Context, id: Int) : TrackService(id) {
     override suspend fun update(track: Track, didReadChapter: Boolean): Track {
         if (track.status != COMPLETED) {
             if (didReadChapter) {
-                track.status = READING
+                if (track.last_chapter_read.toInt() == track.total_chapters && track.total_chapters > 0) {
+                    track.status = COMPLETED
+                } else {
+                    track.status = READING
+                }
             }
         }
 
@@ -62,7 +63,7 @@ class Bangumi(private val context: Context, id: Int) : TrackService(id) {
             refresh(track)
         } else {
             // Set default fields if it's not found in the list
-            track.status = if (hasReadChapters) READING else PLANNING
+            track.status = if (hasReadChapters) READING else PLAN_TO_READ
             track.score = 0F
             add(track)
             update(track)
@@ -87,18 +88,16 @@ class Bangumi(private val context: Context, id: Int) : TrackService(id) {
     override fun getLogoColor() = Color.rgb(240, 145, 153)
 
     override fun getStatusList(): List<Int> {
-        return listOf(READING, COMPLETED, ON_HOLD, DROPPED, PLANNING)
+        return listOf(READING, COMPLETED, ON_HOLD, DROPPED, PLAN_TO_READ)
     }
 
-    override fun getStatus(status: Int): String = with(context) {
-        when (status) {
-            READING -> getString(R.string.reading)
-            COMPLETED -> getString(R.string.completed)
-            ON_HOLD -> getString(R.string.on_hold)
-            DROPPED -> getString(R.string.dropped)
-            PLANNING -> getString(R.string.plan_to_read)
-            else -> ""
-        }
+    override fun getStatus(status: Int): StringResource? = when (status) {
+        READING -> MR.strings.reading
+        PLAN_TO_READ -> MR.strings.plan_to_read
+        COMPLETED -> MR.strings.completed
+        ON_HOLD -> MR.strings.on_hold
+        DROPPED -> MR.strings.dropped
+        else -> null
     }
 
     override fun getReadingStatus(): Int = READING
@@ -120,12 +119,12 @@ class Bangumi(private val context: Context, id: Int) : TrackService(id) {
     }
 
     fun saveToken(oauth: OAuth?) {
-        preferences.trackToken(this).set(json.encodeToString(oauth))
+        trackPreferences.trackToken(this).set(json.encodeToString(oauth))
     }
 
     fun restoreToken(): OAuth? {
         return try {
-            json.decodeFromString<OAuth>(preferences.trackToken(this).get())
+            json.decodeFromString<OAuth>(trackPreferences.trackToken(this).get())
         } catch (e: Exception) {
             null
         }
@@ -133,7 +132,7 @@ class Bangumi(private val context: Context, id: Int) : TrackService(id) {
 
     override fun logout() {
         super.logout()
-        preferences.trackToken(this).delete()
+        trackPreferences.trackToken(this).delete()
         interceptor.newAuth(null)
     }
 
@@ -142,6 +141,10 @@ class Bangumi(private val context: Context, id: Int) : TrackService(id) {
         const val COMPLETED = 2
         const val ON_HOLD = 4
         const val DROPPED = 5
-        const val PLANNING = 1
+        const val PLAN_TO_READ = 1
+
+        private val SCORE_LIST = IntRange(0, 10)
+            .map(Int::toString)
+            .toImmutableList()
     }
 }

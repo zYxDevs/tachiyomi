@@ -11,26 +11,29 @@ import androidx.core.view.isGone
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.WebtoonLayoutManager
-import eu.kanade.tachiyomi.data.preference.PreferencesHelper
+import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.reader.model.ChapterTransition
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
-import eu.kanade.tachiyomi.ui.reader.viewer.BaseViewer
+import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
+import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
-import eu.kanade.tachiyomi.util.system.logcat
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
-import rx.subscriptions.CompositeSubscription
+import tachiyomi.core.util.system.logcat
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import uy.kohesive.injekt.injectLazy
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Implementation of a [BaseViewer] to display pages with a [RecyclerView].
+ * Implementation of a [Viewer] to display pages with a [RecyclerView].
  */
-class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = true) : BaseViewer {
+class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = true) : Viewer {
+
+    val downloadManager: DownloadManager by injectLazy()
 
     private val scope = MainScope()
 
@@ -69,14 +72,9 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
      */
     private var currentPage: Any? = null
 
-    /**
-     * Subscriptions to keep while this viewer is used.
-     */
-    val subscriptions = CompositeSubscription()
-
     private val threshold: Int =
-        Injekt.get<PreferencesHelper>()
-            .readerHideTreshold()
+        Injekt.get<ReaderPreferences>()
+            .readerHideThreshold()
             .get()
             .threshold
 
@@ -92,7 +90,7 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                     onScrolled()
 
-                    if ((dy > threshold || dy < -threshold) && activity.menuVisible) {
+                    if ((dy > threshold || dy < -threshold) && activity.viewModel.state.value.menuVisible) {
                         activity.hideMenu()
                     }
 
@@ -103,26 +101,32 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
                             activity.requestPreloadChapter(firstItem.to)
                         }
                     }
+
+                    val lastIndex = layoutManager.findLastEndVisibleItemPosition()
+                    val lastItem = adapter.items.getOrNull(lastIndex)
+                    if (lastItem is ChapterTransition.Next && lastItem.to == null) {
+                        activity.showMenu()
+                    }
                 }
-            }
+            },
         )
-        recycler.tapListener = f@{ event ->
-            if (!config.tappingEnabled) {
-                activity.toggleMenu()
-                return@f
-            }
-
-            val pos = PointF(event.rawX / recycler.width, event.rawY / recycler.height)
-            val navigator = config.navigator
-
-            when (navigator.getAction(pos)) {
+        recycler.tapListener = { event ->
+            val viewPosition = IntArray(2)
+            recycler.getLocationOnScreen(viewPosition)
+            val viewPositionRelativeToWindow = IntArray(2)
+            recycler.getLocationInWindow(viewPositionRelativeToWindow)
+            val pos = PointF(
+                (event.rawX - viewPosition[0] + viewPositionRelativeToWindow[0]) / recycler.width,
+                (event.rawY - viewPosition[1] + viewPositionRelativeToWindow[1]) / recycler.height,
+            )
+            when (config.navigator.getAction(pos)) {
                 NavigationRegion.MENU -> activity.toggleMenu()
                 NavigationRegion.NEXT, NavigationRegion.RIGHT -> scrollDown()
                 NavigationRegion.PREV, NavigationRegion.LEFT -> scrollUp()
             }
         }
         recycler.longTapListener = f@{ event ->
-            if (activity.menuVisible || config.longTapEnabled) {
+            if (activity.viewModel.state.value.menuVisible || config.longTapEnabled) {
                 val child = recycler.findChildViewUnder(event.x, event.y)
                 if (child != null) {
                     val position = recycler.getChildAdapterPosition(child)
@@ -144,9 +148,13 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
             ActivityCompat.recreate(activity)
         }
 
+        config.doubleTapZoomChangedListener = {
+            frame.doubleTapZoom = it
+        }
+
         config.navigationModeChangedListener = {
             val showOnStart = config.navigationOverlayOnStart || config.forceNavigationOverlay
-            activity.binding.navigationOverlay.setNavigation(config.navigator, config.tappingEnabled, showOnStart)
+            activity.binding.navigationOverlay.setNavigation(config.navigator, showOnStart)
         }
 
         frame.layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
@@ -186,7 +194,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     override fun destroy() {
         super.destroy()
         scope.cancel()
-        subscriptions.unsubscribe()
     }
 
     /**
@@ -221,9 +228,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         if (toChapter != null) {
             logcat { "Request preload destination chapter because we're on the transition" }
             activity.requestPreloadChapter(toChapter)
-        } else if (transition is ChapterTransition.Next) {
-            // No more chapters, show menu because the user is probably going to close the reader
-            activity.showMenu()
         }
     }
 
@@ -231,7 +235,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
      * Tells this viewer to set the given [chapters] as active.
      */
     override fun setChapters(chapters: ViewerChapters) {
-        logcat { "setChapters" }
         val forceTransition = config.alwaysShowChapterTransition || currentPage is ChapterTransition
         adapter.setChapters(chapters, forceTransition)
 
@@ -247,10 +250,9 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
      * Tells this viewer to move to the given [page].
      */
     override fun moveToPage(page: ReaderPage) {
-        logcat { "moveToPage" }
         val position = adapter.items.indexOf(page)
         if (position != -1) {
-            recycler.scrollToPosition(position)
+            layoutManager.scrollToPositionWithOffset(position, 0)
             if (layoutManager.findLastEndVisibleItemPosition() == -1) {
                 onScrolled(pos = position)
             }
@@ -303,14 +305,14 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
 
         when (event.keyCode) {
             KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                if (!config.volumeKeysEnabled || activity.menuVisible) {
+                if (!config.volumeKeysEnabled || activity.viewModel.state.value.menuVisible) {
                     return false
                 } else if (isUp) {
                     if (!config.volumeKeysInverted) scrollDown() else scrollUp()
                 }
             }
             KeyEvent.KEYCODE_VOLUME_UP -> {
-                if (!config.volumeKeysEnabled || activity.menuVisible) {
+                if (!config.volumeKeysEnabled || activity.viewModel.state.value.menuVisible) {
                     return false
                 } else if (isUp) {
                     if (!config.volumeKeysInverted) scrollUp() else scrollDown()
@@ -320,11 +322,13 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
 
             KeyEvent.KEYCODE_DPAD_LEFT,
             KeyEvent.KEYCODE_DPAD_UP,
-            KeyEvent.KEYCODE_PAGE_UP -> if (isUp) scrollUp()
+            KeyEvent.KEYCODE_PAGE_UP,
+            -> if (isUp) scrollUp()
 
             KeyEvent.KEYCODE_DPAD_RIGHT,
             KeyEvent.KEYCODE_DPAD_DOWN,
-            KeyEvent.KEYCODE_PAGE_DOWN -> if (isUp) scrollDown()
+            KeyEvent.KEYCODE_PAGE_DOWN,
+            -> if (isUp) scrollDown()
             else -> return false
         }
         return true
@@ -347,7 +351,7 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         adapter.refresh()
         adapter.notifyItemRangeChanged(
             max(0, position - 3),
-            min(position + 3, adapter.itemCount - 1)
+            min(position + 3, adapter.itemCount - 1),
         )
     }
 }

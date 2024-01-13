@@ -9,26 +9,27 @@ import androidx.appcompat.widget.AppCompatTextView
 import androidx.core.view.isNotEmpty
 import androidx.core.view.isVisible
 import com.google.android.material.progressindicator.CircularProgressIndicator
-import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.ui.reader.model.ChapterTransition
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderTransitionView
 import eu.kanade.tachiyomi.util.system.dpToPx
-import rx.Subscription
-import rx.android.schedulers.AndroidSchedulers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import tachiyomi.core.i18n.stringResource
+import tachiyomi.i18n.MR
 
 /**
  * Holder of the webtoon viewer that contains a chapter transition.
  */
 class WebtoonTransitionHolder(
     val layout: LinearLayout,
-    viewer: WebtoonViewer
+    viewer: WebtoonViewer,
 ) : WebtoonBaseHolder(layout, viewer) {
 
-    /**
-     * Subscription for status changes of the transition page.
-     */
-    private var statusSubscription: Subscription? = null
+    private val scope = MainScope()
+    private var stateJob: Job? = null
 
     private val transitionView = ReaderTransitionView(context)
 
@@ -46,7 +47,7 @@ class WebtoonTransitionHolder(
         layout.orientation = LinearLayout.VERTICAL
         layout.gravity = Gravity.CENTER
 
-        val paddingVertical = 48.dpToPx
+        val paddingVertical = 128.dpToPx
         val paddingHorizontal = 32.dpToPx
         layout.setPadding(paddingHorizontal, paddingVertical, paddingHorizontal, paddingVertical)
 
@@ -63,7 +64,7 @@ class WebtoonTransitionHolder(
      * Binds the given [transition] with this view holder, subscribing to its state.
      */
     fun bind(transition: ChapterTransition) {
-        transitionView.bind(transition)
+        transitionView.bind(transition, viewer.downloadManager, viewer.activity.viewModel.manga)
 
         transition.to?.let { observeStatus(it, transition) }
     }
@@ -72,7 +73,7 @@ class WebtoonTransitionHolder(
      * Called when the view is recycled and being added to the view pool.
      */
     override fun recycle() {
-        unsubscribeStatus()
+        stateJob?.cancel()
     }
 
     /**
@@ -80,31 +81,21 @@ class WebtoonTransitionHolder(
      * state, the pages container is cleaned up before setting the new state.
      */
     private fun observeStatus(chapter: ReaderChapter, transition: ChapterTransition) {
-        unsubscribeStatus()
-
-        statusSubscription = chapter.stateObserver
-            .observeOn(AndroidSchedulers.mainThread())
-            .subscribe { state ->
-                pagesContainer.removeAllViews()
-                when (state) {
-                    is ReaderChapter.State.Wait -> {
+        stateJob?.cancel()
+        stateJob = scope.launch {
+            chapter.stateFlow
+                .collectLatest { state ->
+                    pagesContainer.removeAllViews()
+                    when (state) {
+                        is ReaderChapter.State.Loading -> setLoading()
+                        is ReaderChapter.State.Error -> setError(state.error, transition)
+                        is ReaderChapter.State.Wait, is ReaderChapter.State.Loaded -> {
+                            // No additional view is added
+                        }
                     }
-                    is ReaderChapter.State.Loading -> setLoading()
-                    is ReaderChapter.State.Error -> setError(state.error, transition)
-                    is ReaderChapter.State.Loaded -> setLoaded()
+                    pagesContainer.isVisible = pagesContainer.isNotEmpty()
                 }
-                pagesContainer.isVisible = pagesContainer.isNotEmpty()
-            }
-
-        addSubscription(statusSubscription)
-    }
-
-    /**
-     * Unsubscribes from the status subscription.
-     */
-    private fun unsubscribeStatus() {
-        removeSubscription(statusSubscription)
-        statusSubscription = null
+        }
     }
 
     /**
@@ -116,18 +107,11 @@ class WebtoonTransitionHolder(
 
         val textView = AppCompatTextView(context).apply {
             wrapContent()
-            setText(R.string.transition_pages_loading)
+            text = context.stringResource(MR.strings.transition_pages_loading)
         }
 
         pagesContainer.addView(progress)
         pagesContainer.addView(textView)
-    }
-
-    /**
-     * Sets the loaded state on the pages container.
-     */
-    private fun setLoaded() {
-        // No additional view is added
     }
 
     /**
@@ -136,12 +120,12 @@ class WebtoonTransitionHolder(
     private fun setError(error: Throwable, transition: ChapterTransition) {
         val textView = AppCompatTextView(context).apply {
             wrapContent()
-            text = context.getString(R.string.transition_pages_error, error.message)
+            text = context.stringResource(MR.strings.transition_pages_error, error.message ?: "")
         }
 
         val retryBtn = AppCompatButton(context).apply {
             wrapContent()
-            setText(R.string.action_retry)
+            text = context.stringResource(MR.strings.action_retry)
             setOnClickListener {
                 val toChapter = transition.to
                 if (toChapter != null) {

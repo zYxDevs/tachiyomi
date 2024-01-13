@@ -1,39 +1,61 @@
-plugins {
-    id("com.android.application") version BuildPluginsVersion.AGP apply false
-    id("com.android.library") version BuildPluginsVersion.AGP apply false
-    kotlin("android") version BuildPluginsVersion.KOTLIN apply false
-    id("org.jmailen.kotlinter") version BuildPluginsVersion.KOTLINTER
-    id("com.github.ben-manes.versions") version BuildPluginsVersion.VERSIONS_PLUGIN
-}
-
-allprojects {
-    repositories {
-        mavenCentral()
-        google()
-        maven { setUrl("https://www.jitpack.io") }
-    }
-}
-
-subprojects {
-    apply(plugin = "org.jmailen.kotlinter")
-
-    kotlinter {
-        experimentalRules = true
-
-        // Doesn't play well with Android Studio
-        disabledRules = arrayOf("experimental:argument-list-wrapping")
-    }
-}
+import com.android.build.gradle.BaseExtension
+import com.android.build.gradle.BasePlugin
+import org.gradle.api.tasks.testing.logging.TestLogEvent
+import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 buildscript {
     dependencies {
-        classpath("com.github.zellius:android-shortcut-gradle-plugin:0.1.2")
-        classpath("com.google.gms:google-services:4.3.10")
-        classpath("com.mikepenz.aboutlibraries.plugin:aboutlibraries-plugin:${BuildPluginsVersion.ABOUTLIB_PLUGIN}")
-        classpath(kotlin("serialization", version = BuildPluginsVersion.KOTLIN))
+        classpath(libs.android.shortcut.gradle)
+        classpath(libs.aboutLibraries.gradle)
+        classpath(libs.sqldelight.gradle)
+        classpath(libs.moko.gradle)
     }
 }
 
-tasks.register("clean", Delete::class) {
-    delete(rootProject.buildDir)
+plugins {
+    alias(kotlinx.plugins.serialization) apply false
+}
+
+subprojects {
+    tasks.withType<KotlinJvmCompile> {
+        kotlinOptions {
+            jvmTarget = JavaVersion.VERSION_17.toString()
+        }
+    }
+
+    tasks.withType<Test> {
+        useJUnitPlatform()
+        testLogging {
+            events(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
+        }
+    }
+
+    plugins.withType<BasePlugin> {
+        plugins.apply("tachiyomi.lint")
+
+        configure<BaseExtension> {
+            compileSdkVersion(AndroidConfig.compileSdk)
+            defaultConfig {
+                minSdk = AndroidConfig.minSdk
+                targetSdk = AndroidConfig.targetSdk
+                ndk {
+                    version = AndroidConfig.ndk
+                }
+            }
+
+            compileOptions {
+                sourceCompatibility = JavaVersion.VERSION_17
+                targetCompatibility = JavaVersion.VERSION_17
+                isCoreLibraryDesugaringEnabled = true
+            }
+
+            dependencies {
+                add("coreLibraryDesugaring", libs.desugar)
+            }
+        }
+    }
+}
+
+tasks.register<Delete>("clean") {
+    delete(rootProject.layout.buildDirectory)
 }

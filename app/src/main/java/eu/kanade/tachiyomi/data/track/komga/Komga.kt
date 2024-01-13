@@ -1,19 +1,22 @@
 package eu.kanade.tachiyomi.data.track.komga
 
-import android.content.Context
 import android.graphics.Color
-import androidx.annotation.StringRes
+import dev.icerock.moko.resources.StringResource
 import eu.kanade.tachiyomi.R
-import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.database.models.Track
-import eu.kanade.tachiyomi.data.track.EnhancedTrackService
-import eu.kanade.tachiyomi.data.track.NoLoginTrackService
-import eu.kanade.tachiyomi.data.track.TrackService
+import eu.kanade.tachiyomi.data.track.BaseTracker
+import eu.kanade.tachiyomi.data.track.EnhancedTracker
 import eu.kanade.tachiyomi.data.track.model.TrackSearch
+import eu.kanade.tachiyomi.source.Source
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import tachiyomi.domain.manga.model.Manga
+import tachiyomi.i18n.MR
+import tachiyomi.domain.track.model.Track as DomainTrack
 
-class Komga(private val context: Context, id: Int) : TrackService(id), EnhancedTrackService, NoLoginTrackService {
+class Komga(id: Long) : BaseTracker(id, "Komga"), EnhancedTracker {
 
     companion object {
         const val UNREAD = 1
@@ -26,10 +29,7 @@ class Komga(private val context: Context, id: Int) : TrackService(id), EnhancedT
             .dns(Dns.SYSTEM) // don't use DNS over HTTPS as it breaks IP addressing
             .build()
 
-    val api by lazy { KomgaApi(client) }
-
-    @StringRes
-    override fun nameRes() = R.string.tracker_komga
+    val api by lazy { KomgaApi(id, client) }
 
     override fun getLogo() = R.drawable.ic_tracker_komga
 
@@ -37,13 +37,11 @@ class Komga(private val context: Context, id: Int) : TrackService(id), EnhancedT
 
     override fun getStatusList() = listOf(UNREAD, READING, COMPLETED)
 
-    override fun getStatus(status: Int): String = with(context) {
-        when (status) {
-            UNREAD -> getString(R.string.unread)
-            READING -> getString(R.string.currently_reading)
-            COMPLETED -> getString(R.string.completed)
-            else -> ""
-        }
+    override fun getStatus(status: Int): StringResource? = when (status) {
+        UNREAD -> MR.strings.unread
+        READING -> MR.strings.reading
+        COMPLETED -> MR.strings.completed
+        else -> null
     }
 
     override fun getReadingStatus(): Int = READING
@@ -52,14 +50,18 @@ class Komga(private val context: Context, id: Int) : TrackService(id), EnhancedT
 
     override fun getCompletionStatus(): Int = COMPLETED
 
-    override fun getScoreList(): List<String> = emptyList()
+    override fun getScoreList(): ImmutableList<String> = persistentListOf()
 
-    override fun displayScore(track: Track): String = ""
+    override fun displayScore(track: DomainTrack): String = ""
 
     override suspend fun update(track: Track, didReadChapter: Boolean): Track {
         if (track.status != COMPLETED) {
             if (didReadChapter) {
-                track.status = READING
+                if (track.last_chapter_read.toInt() == track.total_chapters && track.total_chapters > 0) {
+                    track.status = COMPLETED
+                } else {
+                    track.status = READING
+                }
             }
         }
 
@@ -85,7 +87,7 @@ class Komga(private val context: Context, id: Int) : TrackService(id), EnhancedT
         saveCredentials("user", "pass")
     }
 
-    // TrackService.isLogged works by checking that credentials are saved.
+    // [Tracker].isLogged works by checking that credentials are saved.
     // By saving dummy, unused credentials, we can activate the tracker simply by login/logout
     override fun loginNoop() {
         saveCredentials("user", "pass")
@@ -97,6 +99,16 @@ class Komga(private val context: Context, id: Int) : TrackService(id), EnhancedT
         try {
             api.getTrackSearch(manga.url)
         } catch (e: Exception) {
+            null
+        }
+
+    override fun isTrackFrom(track: DomainTrack, manga: Manga, source: Source?): Boolean =
+        track.remoteUrl == manga.url && source?.let { accept(it) } == true
+
+    override fun migrateTrack(track: DomainTrack, manga: Manga, newSource: Source): DomainTrack? =
+        if (accept(newSource)) {
+            track.copy(remoteUrl = manga.url)
+        } else {
             null
         }
 }

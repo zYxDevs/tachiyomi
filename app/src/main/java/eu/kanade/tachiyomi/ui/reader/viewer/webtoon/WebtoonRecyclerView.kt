@@ -17,10 +17,10 @@ import kotlin.math.abs
 /**
  * Implementation of a [RecyclerView] used by the webtoon reader.
  */
-open class WebtoonRecyclerView @JvmOverloads constructor(
+class WebtoonRecyclerView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
-    defStyle: Int = 0
+    defStyle: Int = 0,
 ) : RecyclerView(context, attrs, defStyle) {
 
     private var isZooming = false
@@ -36,6 +36,8 @@ open class WebtoonRecyclerView @JvmOverloads constructor(
 
     private val listener = GestureListener()
     private val detector = Detector()
+
+    var doubleTapZoom = true
 
     var tapListener: ((MotionEvent) -> Unit)? = null
     var longTapListener: ((MotionEvent) -> Boolean)? = null
@@ -94,7 +96,7 @@ open class WebtoonRecyclerView @JvmOverloads constructor(
         fromX: Float,
         toX: Float,
         fromY: Float,
-        toY: Float
+        toY: Float,
     ) {
         isZooming = true
         val animatorSet = AnimatorSet()
@@ -106,7 +108,8 @@ open class WebtoonRecyclerView @JvmOverloads constructor(
 
         val scaleAnimator = ValueAnimator.ofFloat(fromRate, toRate)
         scaleAnimator.addUpdateListener { animation ->
-            setScaleRate(animation.animatedValue as Float)
+            currentScale = animation.animatedValue as Float
+            setScaleRate(currentScale)
         }
         animatorSet.playTogether(translationXAnimator, translationYAnimator, scaleAnimator)
         animatorSet.duration = ANIMATOR_DURATION_TIME.toLong()
@@ -122,26 +125,26 @@ open class WebtoonRecyclerView @JvmOverloads constructor(
         if (currentScale <= 1f) return false
 
         val distanceTimeFactor = 0.4f
-        var newX: Float? = null
-        var newY: Float? = null
+        val animatorSet = AnimatorSet()
 
         if (velocityX != 0) {
             val dx = (distanceTimeFactor * velocityX / 2)
-            newX = getPositionX(x + dx)
+            val newX = getPositionX(x + dx)
+            val translationXAnimator = ValueAnimator.ofFloat(x, newX)
+            translationXAnimator.addUpdateListener { animation -> x = getPositionX(animation.animatedValue as Float) }
+            animatorSet.play(translationXAnimator)
         }
         if (velocityY != 0 && (atFirstPosition || atLastPosition)) {
             val dy = (distanceTimeFactor * velocityY / 2)
-            newY = getPositionY(y + dy)
+            val newY = getPositionY(y + dy)
+            val translationYAnimator = ValueAnimator.ofFloat(y, newY)
+            translationYAnimator.addUpdateListener { animation -> y = getPositionY(animation.animatedValue as Float) }
+            animatorSet.play(translationYAnimator)
         }
 
-        animate()
-            .apply {
-                newX?.let { x(it) }
-                newY?.let { y(it) }
-            }
-            .setInterpolator(DecelerateInterpolator())
-            .setDuration(400)
-            .start()
+        animatorSet.duration = 400
+        animatorSet.interpolator = DecelerateInterpolator()
+        animatorSet.start()
 
         return true
     }
@@ -164,7 +167,7 @@ open class WebtoonRecyclerView @JvmOverloads constructor(
         currentScale *= scaleFactor
         currentScale = currentScale.coerceIn(
             MIN_RATE,
-            MAX_SCALE_RATE
+            MAX_SCALE_RATE,
         )
 
         setScaleRate(currentScale)
@@ -208,9 +211,12 @@ open class WebtoonRecyclerView @JvmOverloads constructor(
         }
 
         fun onDoubleTapConfirmed(ev: MotionEvent) {
-            if (!isZooming) {
+            if (!isZooming && doubleTapZoom) {
                 if (scaleX != DEFAULT_RATE) {
                     zoom(currentScale, DEFAULT_RATE, x, 0f, y, 0f)
+                    layoutParams.height = originalHeight
+                    halfHeight = layoutParams.height / 2
+                    requestLayout()
                 } else {
                     val toScale = 2f
                     val toX = (halfWidth - ev.x) * (toScale - 1)
@@ -221,8 +227,7 @@ open class WebtoonRecyclerView @JvmOverloads constructor(
         }
 
         override fun onLongTapConfirmed(ev: MotionEvent) {
-            val listener = longTapListener
-            if (listener != null && listener.invoke(ev)) {
+            if (longTapListener?.invoke(ev) == true) {
                 performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             }
         }

@@ -8,9 +8,9 @@ class TrackSearch : Track {
 
     override var manga_id: Long = 0
 
-    override var sync_id: Int = 0
+    override var tracker_id: Int = 0
 
-    override var media_id: Int = 0
+    override var remote_id: Long = 0
 
     override var library_id: Long? = null
 
@@ -20,7 +20,7 @@ class TrackSearch : Track {
 
     override var total_chapters: Int = 0
 
-    override var score: Float = 0f
+    override var score: Float = -1f
 
     override var status: Int = 0
 
@@ -42,25 +42,27 @@ class TrackSearch : Track {
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other == null || javaClass != other.javaClass) return false
+        if (javaClass != other?.javaClass) return false
 
-        other as Track
+        other as TrackSearch
 
         if (manga_id != other.manga_id) return false
-        if (sync_id != other.sync_id) return false
-        return media_id == other.media_id
+        if (tracker_id != other.tracker_id) return false
+        if (remote_id != other.remote_id) return false
+
+        return true
     }
 
     override fun hashCode(): Int {
-        var result = (manga_id xor manga_id.ushr(32)).toInt()
-        result = 31 * result + sync_id
-        result = 31 * result + media_id
+        var result = manga_id.hashCode()
+        result = 31 * result + tracker_id
+        result = 31 * result + remote_id.hashCode()
         return result
     }
 
     companion object {
-        fun create(serviceId: Int): TrackSearch = TrackSearch().apply {
-            sync_id = serviceId
+        fun create(serviceId: Long): TrackSearch = TrackSearch().apply {
+            tracker_id = serviceId.toInt()
         }
     }
 }

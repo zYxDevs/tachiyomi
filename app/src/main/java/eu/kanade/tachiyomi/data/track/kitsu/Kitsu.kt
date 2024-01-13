@@ -1,19 +1,22 @@
 package eu.kanade.tachiyomi.data.track.kitsu
 
-import android.content.Context
 import android.graphics.Color
-import androidx.annotation.StringRes
+import dev.icerock.moko.resources.StringResource
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.database.models.Track
-import eu.kanade.tachiyomi.data.track.TrackService
+import eu.kanade.tachiyomi.data.track.BaseTracker
+import eu.kanade.tachiyomi.data.track.DeletableTracker
 import eu.kanade.tachiyomi.data.track.model.TrackSearch
-import kotlinx.serialization.decodeFromString
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.toImmutableList
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import tachiyomi.i18n.MR
 import uy.kohesive.injekt.injectLazy
 import java.text.DecimalFormat
+import tachiyomi.domain.track.model.Track as DomainTrack
 
-class Kitsu(private val context: Context, id: Int) : TrackService(id) {
+class Kitsu(id: Long) : BaseTracker(id, "Kitsu"), DeletableTracker {
 
     companion object {
         const val READING = 1
@@ -22,9 +25,6 @@ class Kitsu(private val context: Context, id: Int) : TrackService(id) {
         const val DROPPED = 4
         const val PLAN_TO_READ = 5
     }
-
-    @StringRes
-    override fun nameRes() = R.string.tracker_kitsu
 
     override val supportsReadingDates: Boolean = true
 
@@ -39,18 +39,16 @@ class Kitsu(private val context: Context, id: Int) : TrackService(id) {
     override fun getLogoColor() = Color.rgb(51, 37, 50)
 
     override fun getStatusList(): List<Int> {
-        return listOf(READING, PLAN_TO_READ, COMPLETED, ON_HOLD, DROPPED)
+        return listOf(READING, COMPLETED, ON_HOLD, DROPPED, PLAN_TO_READ)
     }
 
-    override fun getStatus(status: Int): String = with(context) {
-        when (status) {
-            READING -> getString(R.string.currently_reading)
-            PLAN_TO_READ -> getString(R.string.want_to_read)
-            COMPLETED -> getString(R.string.completed)
-            ON_HOLD -> getString(R.string.on_hold)
-            DROPPED -> getString(R.string.dropped)
-            else -> ""
-        }
+    override fun getStatus(status: Int): StringResource? = when (status) {
+        READING -> MR.strings.reading
+        PLAN_TO_READ -> MR.strings.plan_to_read
+        COMPLETED -> MR.strings.completed
+        ON_HOLD -> MR.strings.on_hold
+        DROPPED -> MR.strings.dropped
+        else -> null
     }
 
     override fun getReadingStatus(): Int = READING
@@ -59,16 +57,16 @@ class Kitsu(private val context: Context, id: Int) : TrackService(id) {
 
     override fun getCompletionStatus(): Int = COMPLETED
 
-    override fun getScoreList(): List<String> {
+    override fun getScoreList(): ImmutableList<String> {
         val df = DecimalFormat("0.#")
-        return listOf("0") + IntRange(2, 20).map { df.format(it / 2f) }
+        return (listOf("0") + IntRange(2, 20).map { df.format(it / 2f) }).toImmutableList()
     }
 
     override fun indexToScore(index: Int): Float {
         return if (index > 0) (index + 1) / 2f else 0f
     }
 
-    override fun displayScore(track: Track): String {
+    override fun displayScore(track: DomainTrack): String {
         val df = DecimalFormat("0.#")
         return df.format(track.score)
     }
@@ -80,18 +78,30 @@ class Kitsu(private val context: Context, id: Int) : TrackService(id) {
     override suspend fun update(track: Track, didReadChapter: Boolean): Track {
         if (track.status != COMPLETED) {
             if (didReadChapter) {
-                track.status = READING
+                if (track.last_chapter_read.toInt() == track.total_chapters && track.total_chapters > 0) {
+                    track.status = COMPLETED
+                    track.finished_reading_date = System.currentTimeMillis()
+                } else {
+                    track.status = READING
+                    if (track.last_chapter_read == 1F) {
+                        track.started_reading_date = System.currentTimeMillis()
+                    }
+                }
             }
         }
 
         return api.updateLibManga(track)
     }
 
+    override suspend fun delete(track: DomainTrack) {
+        api.removeLibManga(track)
+    }
+
     override suspend fun bind(track: Track, hasReadChapters: Boolean): Track {
         val remoteTrack = api.findLibManga(track, getUserId())
         return if (remoteTrack != null) {
             track.copyPersonalFrom(remoteTrack)
-            track.media_id = remoteTrack.media_id
+            track.remote_id = remoteTrack.remote_id
 
             if (track.status != COMPLETED) {
                 track.status = if (hasReadChapters) READING else track.status
@@ -133,12 +143,12 @@ class Kitsu(private val context: Context, id: Int) : TrackService(id) {
     }
 
     fun saveToken(oauth: OAuth?) {
-        preferences.trackToken(this).set(json.encodeToString(oauth))
+        trackPreferences.trackToken(this).set(json.encodeToString(oauth))
     }
 
     fun restoreToken(): OAuth? {
         return try {
-            json.decodeFromString<OAuth>(preferences.trackToken(this).get())
+            json.decodeFromString<OAuth>(trackPreferences.trackToken(this).get())
         } catch (e: Exception) {
             null
         }

@@ -1,13 +1,10 @@
 package eu.kanade.tachiyomi.data.track.komga
 
 import eu.kanade.tachiyomi.data.database.models.Track
-import eu.kanade.tachiyomi.data.track.TrackManager
 import eu.kanade.tachiyomi.data.track.model.TrackSearch
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.await
+import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.parseAs
-import eu.kanade.tachiyomi.util.lang.withIOContext
-import eu.kanade.tachiyomi.util.system.logcat
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import logcat.LogPriority
@@ -15,34 +12,46 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import tachiyomi.core.util.lang.withIOContext
+import tachiyomi.core.util.system.logcat
 import uy.kohesive.injekt.injectLazy
 
-const val READLIST_API = "/api/v1/readlists"
+private const val READLIST_API = "/api/v1/readlists"
 
-class KomgaApi(private val client: OkHttpClient) {
+class KomgaApi(
+    private val trackId: Long,
+    private val client: OkHttpClient,
+) {
 
     private val json: Json by injectLazy()
 
     suspend fun getTrackSearch(url: String): TrackSearch =
         withIOContext {
             try {
-                val track = if (url.contains(READLIST_API)) {
-                    client.newCall(GET(url))
-                        .await()
-                        .parseAs<ReadListDto>()
-                        .toTrack()
-                } else {
-                    client.newCall(GET(url))
-                        .await()
-                        .parseAs<SeriesDto>()
-                        .toTrack()
+                val track = with(json) {
+                    if (url.contains(READLIST_API)) {
+                        client.newCall(GET(url))
+                            .awaitSuccess()
+                            .parseAs<ReadListDto>()
+                            .toTrack()
+                    } else {
+                        client.newCall(GET(url))
+                            .awaitSuccess()
+                            .parseAs<SeriesDto>()
+                            .toTrack()
+                    }
                 }
 
                 val progress = client
                     .newCall(GET("${url.replace("/api/v1/series/", "/api/v2/series/")}/read-progress/tachiyomi"))
-                    .await().let {
-                        if (url.contains("/api/v1/series/")) it.parseAs<ReadProgressV2Dto>()
-                        else it.parseAs<ReadProgressDto>().toV2()
+                    .awaitSuccess().let {
+                        with(json) {
+                            if (url.contains("/api/v1/series/")) {
+                                it.parseAs<ReadProgressV2Dto>()
+                            } else {
+                                it.parseAs<ReadProgressDto>().toV2()
+                            }
+                        }
                     }
 
                 track.apply {
@@ -72,19 +81,19 @@ class KomgaApi(private val client: OkHttpClient) {
             Request.Builder()
                 .url("${track.tracking_url.replace("/api/v1/series/", "/api/v2/series/")}/read-progress/tachiyomi")
                 .put(payload.toRequestBody("application/json".toMediaType()))
-                .build()
+                .build(),
         )
-            .await()
+            .awaitSuccess()
         return getTrackSearch(track.tracking_url)
     }
 
-    private fun SeriesDto.toTrack(): TrackSearch = TrackSearch.create(TrackManager.KOMGA).also {
+    private fun SeriesDto.toTrack(): TrackSearch = TrackSearch.create(trackId).also {
         it.title = metadata.title
         it.summary = metadata.summary
         it.publishing_status = metadata.status
     }
 
-    private fun ReadListDto.toTrack(): TrackSearch = TrackSearch.create(TrackManager.KOMGA).also {
+    private fun ReadListDto.toTrack(): TrackSearch = TrackSearch.create(trackId).also {
         it.title = name
     }
 }

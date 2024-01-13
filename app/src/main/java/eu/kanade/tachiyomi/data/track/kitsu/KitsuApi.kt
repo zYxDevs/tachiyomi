@@ -3,18 +3,19 @@ package eu.kanade.tachiyomi.data.track.kitsu
 import androidx.core.net.toUri
 import eu.kanade.tachiyomi.data.database.models.Track
 import eu.kanade.tachiyomi.data.track.model.TrackSearch
+import eu.kanade.tachiyomi.network.DELETE
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.network.await
+import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.jsonMime
 import eu.kanade.tachiyomi.network.parseAs
-import eu.kanade.tachiyomi.util.lang.withIOContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import okhttp3.FormBody
@@ -24,8 +25,15 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import tachiyomi.core.util.lang.withIOContext
+import uy.kohesive.injekt.injectLazy
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import tachiyomi.domain.track.model.Track as DomainTrack
 
 class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) {
+
+    private val json: Json by injectLazy()
 
     private val authClient = client.newBuilder().addInterceptor(interceptor).build()
 
@@ -47,7 +55,7 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
                         }
                         putJsonObject("media") {
                             putJsonObject("data") {
-                                put("id", track.media_id)
+                                put("id", track.remote_id)
                                 put("type", "manga")
                             }
                         }
@@ -55,22 +63,25 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
                 }
             }
 
-            authClient.newCall(
-                POST(
-                    "${baseUrl}library-entries",
-                    headers = headersOf(
-                        "Content-Type",
-                        "application/vnd.api+json"
+            with(json) {
+                authClient.newCall(
+                    POST(
+                        "${baseUrl}library-entries",
+                        headers = headersOf(
+                            "Content-Type",
+                            "application/vnd.api+json",
+                        ),
+                        body = data.toString()
+                            .toRequestBody("application/vnd.api+json".toMediaType()),
                     ),
-                    body = data.toString().toRequestBody("application/vnd.api+json".toMediaType())
                 )
-            )
-                .await()
-                .parseAs<JsonObject>()
-                .let {
-                    track.media_id = it["data"]!!.jsonObject["id"]!!.jsonPrimitive.int
-                    track
-                }
+                    .awaitSuccess()
+                    .parseAs<JsonObject>()
+                    .let {
+                        track.remote_id = it["data"]!!.jsonObject["id"]!!.jsonPrimitive.long
+                        track
+                    }
+            }
         }
     }
 
@@ -79,7 +90,7 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
             val data = buildJsonObject {
                 putJsonObject("data") {
                     put("type", "libraryEntries")
-                    put("id", track.media_id)
+                    put("id", track.remote_id)
                     putJsonObject("attributes") {
                         put("status", track.toKitsuStatus())
                         put("progress", track.last_chapter_read.toInt())
@@ -90,106 +101,133 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
                 }
             }
 
-            authClient.newCall(
-                Request.Builder()
-                    .url("${baseUrl}library-entries/${track.media_id}")
-                    .headers(
-                        headersOf(
-                            "Content-Type",
-                            "application/vnd.api+json"
+            with(json) {
+                authClient.newCall(
+                    Request.Builder()
+                        .url("${baseUrl}library-entries/${track.remote_id}")
+                        .headers(
+                            headersOf(
+                                "Content-Type",
+                                "application/vnd.api+json",
+                            ),
                         )
-                    )
-                    .patch(data.toString().toRequestBody("application/vnd.api+json".toMediaType()))
-                    .build()
-            )
-                .await()
-                .parseAs<JsonObject>()
-                .let {
-                    track
-                }
+                        .patch(
+                            data.toString().toRequestBody("application/vnd.api+json".toMediaType()),
+                        )
+                        .build(),
+                )
+                    .awaitSuccess()
+                    .parseAs<JsonObject>()
+                    .let {
+                        track
+                    }
+            }
         }
     }
 
+    suspend fun removeLibManga(track: DomainTrack) {
+        withIOContext {
+            authClient
+                .newCall(
+                    DELETE(
+                        "${baseUrl}library-entries/${track.remoteId}",
+                        headers = headersOf(
+                            "Content-Type",
+                            "application/vnd.api+json",
+                        ),
+                    ),
+                )
+                .awaitSuccess()
+        }
+    }
     suspend fun search(query: String): List<TrackSearch> {
         return withIOContext {
-            authClient.newCall(GET(algoliaKeyUrl))
-                .await()
-                .parseAs<JsonObject>()
-                .let {
-                    val key = it["media"]!!.jsonObject["key"]!!.jsonPrimitive.content
-                    algoliaSearch(key, query)
-                }
+            with(json) {
+                authClient.newCall(GET(algoliaKeyUrl))
+                    .awaitSuccess()
+                    .parseAs<JsonObject>()
+                    .let {
+                        val key = it["media"]!!.jsonObject["key"]!!.jsonPrimitive.content
+                        algoliaSearch(key, query)
+                    }
+            }
         }
     }
 
     private suspend fun algoliaSearch(key: String, query: String): List<TrackSearch> {
         return withIOContext {
             val jsonObject = buildJsonObject {
-                put("params", "query=$query$algoliaFilter")
+                put("params", "query=${URLEncoder.encode(query, StandardCharsets.UTF_8.name())}$algoliaFilter")
             }
 
-            client.newCall(
-                POST(
-                    algoliaUrl,
-                    headers = headersOf(
-                        "X-Algolia-Application-Id",
-                        algoliaAppId,
-                        "X-Algolia-API-Key",
-                        key,
+            with(json) {
+                client.newCall(
+                    POST(
+                        algoliaUrl,
+                        headers = headersOf(
+                            "X-Algolia-Application-Id",
+                            algoliaAppId,
+                            "X-Algolia-API-Key",
+                            key,
+                        ),
+                        body = jsonObject.toString().toRequestBody(jsonMime),
                     ),
-                    body = jsonObject.toString().toRequestBody(jsonMime)
                 )
-            )
-                .await()
-                .parseAs<JsonObject>()
-                .let {
-                    it["hits"]!!.jsonArray
-                        .map { KitsuSearchManga(it.jsonObject) }
-                        .filter { it.subType != "novel" }
-                        .map { it.toTrack() }
-                }
+                    .awaitSuccess()
+                    .parseAs<JsonObject>()
+                    .let {
+                        it["hits"]!!.jsonArray
+                            .map { KitsuSearchManga(it.jsonObject) }
+                            .filter { it.subType != "novel" }
+                            .map { it.toTrack() }
+                    }
+            }
         }
     }
 
     suspend fun findLibManga(track: Track, userId: String): Track? {
         return withIOContext {
             val url = "${baseUrl}library-entries".toUri().buildUpon()
-                .encodedQuery("filter[manga_id]=${track.media_id}&filter[user_id]=$userId")
+                .encodedQuery("filter[manga_id]=${track.remote_id}&filter[user_id]=$userId")
                 .appendQueryParameter("include", "manga")
                 .build()
-            authClient.newCall(GET(url.toString()))
-                .await()
-                .parseAs<JsonObject>()
-                .let {
-                    val data = it["data"]!!.jsonArray
-                    if (data.size > 0) {
-                        val manga = it["included"]!!.jsonArray[0].jsonObject
-                        KitsuLibManga(data[0].jsonObject, manga).toTrack()
-                    } else {
-                        null
+            with(json) {
+                authClient.newCall(GET(url.toString()))
+                    .awaitSuccess()
+                    .parseAs<JsonObject>()
+                    .let {
+                        val data = it["data"]!!.jsonArray
+                        if (data.size > 0) {
+                            val manga = it["included"]!!.jsonArray[0].jsonObject
+                            KitsuLibManga(data[0].jsonObject, manga).toTrack()
+                        } else {
+                            null
+                        }
                     }
-                }
+            }
         }
     }
 
     suspend fun getLibManga(track: Track): Track {
         return withIOContext {
             val url = "${baseUrl}library-entries".toUri().buildUpon()
-                .encodedQuery("filter[id]=${track.media_id}")
+                .encodedQuery("filter[id]=${track.remote_id}")
                 .appendQueryParameter("include", "manga")
                 .build()
-            authClient.newCall(GET(url.toString()))
-                .await()
-                .parseAs<JsonObject>()
-                .let {
-                    val data = it["data"]!!.jsonArray
-                    if (data.size > 0) {
-                        val manga = it["included"]!!.jsonArray[0].jsonObject
-                        KitsuLibManga(data[0].jsonObject, manga).toTrack()
-                    } else {
-                        throw Exception("Could not find manga")
+            with(json) {
+                authClient.newCall(GET(url.toString()))
+                    .awaitSuccess()
+                    .parseAs<JsonObject>()
+                    .let {
+                        val data = it["data"]!!.jsonArray
+                        if (data.size > 0) {
+                            val manga = it["included"]!!.jsonArray[0].jsonObject
+                            KitsuLibManga(data[0].jsonObject, manga).toTrack()
+                        } else {
+                            throw Exception("Could not find manga")
+                        }
                     }
-                }
+            }
         }
     }
 
@@ -202,9 +240,11 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
                 .add("client_id", clientId)
                 .add("client_secret", clientSecret)
                 .build()
-            client.newCall(POST(loginUrl, body = formBody))
-                .await()
-                .parseAs()
+            with(json) {
+                client.newCall(POST(loginUrl, body = formBody))
+                    .awaitSuccess()
+                    .parseAs()
+            }
         }
     }
 
@@ -213,12 +253,14 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
             val url = "${baseUrl}users".toUri().buildUpon()
                 .encodedQuery("filter[self]=true")
                 .build()
-            authClient.newCall(GET(url.toString()))
-                .await()
-                .parseAs<JsonObject>()
-                .let {
-                    it["data"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
-                }
+            with(json) {
+                authClient.newCall(GET(url.toString()))
+                    .awaitSuccess()
+                    .parseAs<JsonObject>()
+                    .let {
+                        it["data"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+                    }
+            }
         }
     }
 
@@ -237,9 +279,11 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
             "https://AWQO5J657S-dsn.algolia.net/1/indexes/production_media/query/"
         private const val algoliaAppId = "AWQO5J657S"
         private const val algoliaFilter =
-            "&facetFilters=%5B%22kind%3Amanga%22%5D&attributesToRetrieve=%5B%22synopsis%22%2C%22canonicalTitle%22%2C%22chapterCount%22%2C%22posterImage%22%2C%22startDate%22%2C%22subtype%22%2C%22endDate%22%2C%20%22id%22%5D"
+            "&facetFilters=%5B%22kind%3Amanga%22%5D&attributesToRetrieve=" +
+                "%5B%22synopsis%22%2C%22averageRating%22%2C%22canonicalTitle%22%2C%22chapterCount%22%2C%22" +
+                "posterImage%22%2C%22startDate%22%2C%22subtype%22%2C%22endDate%22%2C%20%22id%22%5D"
 
-        fun mangaUrl(remoteId: Int): String {
+        fun mangaUrl(remoteId: Long): String {
             return baseMangaUrl + remoteId
         }
 
@@ -250,7 +294,7 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
                 .add("refresh_token", token)
                 .add("client_id", clientId)
                 .add("client_secret", clientSecret)
-                .build()
+                .build(),
         )
     }
 }

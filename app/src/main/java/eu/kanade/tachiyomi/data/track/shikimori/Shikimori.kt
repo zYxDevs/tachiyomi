@@ -1,42 +1,44 @@
 package eu.kanade.tachiyomi.data.track.shikimori
 
-import android.content.Context
 import android.graphics.Color
-import androidx.annotation.StringRes
+import dev.icerock.moko.resources.StringResource
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.database.models.Track
-import eu.kanade.tachiyomi.data.track.TrackService
+import eu.kanade.tachiyomi.data.track.BaseTracker
+import eu.kanade.tachiyomi.data.track.DeletableTracker
 import eu.kanade.tachiyomi.data.track.model.TrackSearch
-import kotlinx.serialization.decodeFromString
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.toImmutableList
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import tachiyomi.i18n.MR
 import uy.kohesive.injekt.injectLazy
+import tachiyomi.domain.track.model.Track as DomainTrack
 
-class Shikimori(private val context: Context, id: Int) : TrackService(id) {
+class Shikimori(id: Long) : BaseTracker(id, "Shikimori"), DeletableTracker {
 
     companion object {
         const val READING = 1
         const val COMPLETED = 2
         const val ON_HOLD = 3
         const val DROPPED = 4
-        const val PLANNING = 5
-        const val REPEATING = 6
+        const val PLAN_TO_READ = 5
+        const val REREADING = 6
+
+        private val SCORE_LIST = IntRange(0, 10)
+            .map(Int::toString)
+            .toImmutableList()
     }
 
     private val json: Json by injectLazy()
 
     private val interceptor by lazy { ShikimoriInterceptor(this) }
 
-    private val api by lazy { ShikimoriApi(client, interceptor) }
+    private val api by lazy { ShikimoriApi(id, client, interceptor) }
 
-    @StringRes
-    override fun nameRes() = R.string.tracker_shikimori
+    override fun getScoreList(): ImmutableList<String> = SCORE_LIST
 
-    override fun getScoreList(): List<String> {
-        return IntRange(0, 10).map(Int::toString)
-    }
-
-    override fun displayScore(track: Track): String {
+    override fun displayScore(track: DomainTrack): String {
         return track.score.toInt().toString()
     }
 
@@ -46,12 +48,20 @@ class Shikimori(private val context: Context, id: Int) : TrackService(id) {
 
     override suspend fun update(track: Track, didReadChapter: Boolean): Track {
         if (track.status != COMPLETED) {
-            if (track.status != REPEATING && didReadChapter) {
-                track.status = READING
+            if (didReadChapter) {
+                if (track.last_chapter_read.toInt() == track.total_chapters && track.total_chapters > 0) {
+                    track.status = COMPLETED
+                } else if (track.status != REREADING) {
+                    track.status = READING
+                }
             }
         }
 
         return api.updateLibManga(track, getUsername())
+    }
+
+    override suspend fun delete(track: DomainTrack) {
+        api.deleteLibManga(track)
     }
 
     override suspend fun bind(track: Track, hasReadChapters: Boolean): Track {
@@ -61,14 +71,14 @@ class Shikimori(private val context: Context, id: Int) : TrackService(id) {
             track.library_id = remoteTrack.library_id
 
             if (track.status != COMPLETED) {
-                val isRereading = track.status == REPEATING
+                val isRereading = track.status == REREADING
                 track.status = if (isRereading.not() && hasReadChapters) READING else track.status
             }
 
             update(track)
         } else {
             // Set default fields if it's not found in the list
-            track.status = if (hasReadChapters) READING else PLANNING
+            track.status = if (hasReadChapters) READING else PLAN_TO_READ
             track.score = 0F
             add(track)
         }
@@ -80,6 +90,7 @@ class Shikimori(private val context: Context, id: Int) : TrackService(id) {
 
     override suspend fun refresh(track: Track): Track {
         api.findLibManga(track, getUsername())?.let { remoteTrack ->
+            track.library_id = remoteTrack.library_id
             track.copyPersonalFrom(remoteTrack)
             track.total_chapters = remoteTrack.total_chapters
         }
@@ -91,24 +102,22 @@ class Shikimori(private val context: Context, id: Int) : TrackService(id) {
     override fun getLogoColor() = Color.rgb(40, 40, 40)
 
     override fun getStatusList(): List<Int> {
-        return listOf(READING, COMPLETED, ON_HOLD, DROPPED, PLANNING, REPEATING)
+        return listOf(READING, COMPLETED, ON_HOLD, DROPPED, PLAN_TO_READ, REREADING)
     }
 
-    override fun getStatus(status: Int): String = with(context) {
-        when (status) {
-            READING -> getString(R.string.reading)
-            COMPLETED -> getString(R.string.completed)
-            ON_HOLD -> getString(R.string.on_hold)
-            DROPPED -> getString(R.string.dropped)
-            PLANNING -> getString(R.string.plan_to_read)
-            REPEATING -> getString(R.string.repeating)
-            else -> ""
-        }
+    override fun getStatus(status: Int): StringResource? = when (status) {
+        READING -> MR.strings.reading
+        PLAN_TO_READ -> MR.strings.plan_to_read
+        COMPLETED -> MR.strings.completed
+        ON_HOLD -> MR.strings.on_hold
+        DROPPED -> MR.strings.dropped
+        REREADING -> MR.strings.repeating
+        else -> null
     }
 
     override fun getReadingStatus(): Int = READING
 
-    override fun getRereadingStatus(): Int = REPEATING
+    override fun getRereadingStatus(): Int = REREADING
 
     override fun getCompletionStatus(): Int = COMPLETED
 
@@ -126,12 +135,12 @@ class Shikimori(private val context: Context, id: Int) : TrackService(id) {
     }
 
     fun saveToken(oauth: OAuth?) {
-        preferences.trackToken(this).set(json.encodeToString(oauth))
+        trackPreferences.trackToken(this).set(json.encodeToString(oauth))
     }
 
     fun restoreToken(): OAuth? {
         return try {
-            json.decodeFromString<OAuth>(preferences.trackToken(this).get())
+            json.decodeFromString<OAuth>(trackPreferences.trackToken(this).get())
         } catch (e: Exception) {
             null
         }
@@ -139,7 +148,7 @@ class Shikimori(private val context: Context, id: Int) : TrackService(id) {
 
     override fun logout() {
         super.logout()
-        preferences.trackToken(this).delete()
+        trackPreferences.trackToken(this).delete()
         interceptor.newAuth(null)
     }
 }

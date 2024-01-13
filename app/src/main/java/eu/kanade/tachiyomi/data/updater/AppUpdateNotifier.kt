@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.data.updater
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -11,7 +12,10 @@ import eu.kanade.tachiyomi.data.notification.NotificationHandler
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
 import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.util.system.notificationBuilder
-import eu.kanade.tachiyomi.util.system.notificationManager
+import eu.kanade.tachiyomi.util.system.notify
+import tachiyomi.core.i18n.stringResource
+import tachiyomi.domain.release.model.Release
+import tachiyomi.i18n.MR
 
 internal class AppUpdateNotifier(private val context: Context) {
 
@@ -23,35 +27,47 @@ internal class AppUpdateNotifier(private val context: Context) {
      * @param id id of the notification channel.
      */
     private fun NotificationCompat.Builder.show(id: Int = Notifications.ID_APP_UPDATER) {
-        context.notificationManager.notify(id, build())
+        context.notify(id, build())
     }
 
-    fun promptUpdate(release: GithubRelease) {
-        val intent = Intent(context, AppUpdateService::class.java).apply {
-            putExtra(AppUpdateService.EXTRA_DOWNLOAD_URL, release.getDownloadLink())
-        }
-        val updateIntent = PendingIntent.getService(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
+    fun cancel() {
+        NotificationReceiver.dismissNotification(context, Notifications.ID_APP_UPDATER)
+    }
 
-        val releaseIntent = Intent(Intent.ACTION_VIEW, release.releaseLink.toUri()).apply {
+    @SuppressLint("LaunchActivityFromNotification")
+    fun promptUpdate(release: Release) {
+        val updateIntent = NotificationReceiver.downloadAppUpdatePendingBroadcast(
+            context,
+            release.getDownloadLink(),
+            release.version,
+        )
+
+        val releaseIntent = Intent(Intent.ACTION_VIEW, release.releaseLink.toUri()).run {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            PendingIntent.getActivity(
+                context,
+                release.hashCode(),
+                this,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
         }
-        val releaseInfoIntent = PendingIntent.getActivity(context, release.hashCode(), releaseIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
         with(notificationBuilder) {
-            setContentTitle(context.getString(R.string.update_check_notification_update_available))
+            setContentTitle(context.stringResource(MR.strings.update_check_notification_update_available))
+            setContentText(release.version)
             setSmallIcon(android.R.drawable.stat_sys_download_done)
             setContentIntent(updateIntent)
 
             clearActions()
             addAction(
                 android.R.drawable.stat_sys_download_done,
-                context.getString(R.string.action_download),
+                context.stringResource(MR.strings.action_download),
                 updateIntent,
             )
             addAction(
                 R.drawable.ic_info_24dp,
-                context.getString(R.string.whats_new),
-                releaseInfoIntent,
+                context.stringResource(MR.strings.whats_new),
+                releaseIntent,
             )
         }
         notificationBuilder.show()
@@ -65,9 +81,16 @@ internal class AppUpdateNotifier(private val context: Context) {
     fun onDownloadStarted(title: String? = null): NotificationCompat.Builder {
         with(notificationBuilder) {
             title?.let { setContentTitle(title) }
-            setContentText(context.getString(R.string.update_check_notification_download_in_progress))
+            setContentText(context.stringResource(MR.strings.update_check_notification_download_in_progress))
             setSmallIcon(android.R.drawable.stat_sys_download)
             setOngoing(true)
+
+            clearActions()
+            addAction(
+                R.drawable.ic_close_24dp,
+                context.stringResource(MR.strings.action_cancel),
+                NotificationReceiver.cancelDownloadAppUpdatePendingBroadcast(context),
+            )
         }
         notificationBuilder.show()
         return notificationBuilder
@@ -91,28 +114,50 @@ internal class AppUpdateNotifier(private val context: Context) {
      *
      * @param uri path location of apk.
      */
-    fun onDownloadFinished(uri: Uri) {
+    fun promptInstall(uri: Uri) {
         val installIntent = NotificationHandler.installApkPendingActivity(context, uri)
         with(notificationBuilder) {
-            setContentText(context.getString(R.string.update_check_notification_download_complete))
+            setContentText(context.stringResource(MR.strings.update_check_notification_download_complete))
             setSmallIcon(android.R.drawable.stat_sys_download_done)
             setOnlyAlertOnce(false)
             setProgress(0, 0, false)
             setContentIntent(installIntent)
+            setOngoing(true)
 
             clearActions()
             addAction(
                 R.drawable.ic_system_update_alt_white_24dp,
-                context.getString(R.string.action_install),
-                installIntent
+                context.stringResource(MR.strings.action_install),
+                installIntent,
             )
             addAction(
                 R.drawable.ic_close_24dp,
-                context.getString(R.string.action_cancel),
-                NotificationReceiver.dismissNotificationPendingBroadcast(context, Notifications.ID_APP_UPDATER)
+                context.stringResource(MR.strings.action_cancel),
+                NotificationReceiver.dismissNotificationPendingBroadcast(context, Notifications.ID_APP_UPDATE_PROMPT),
             )
         }
-        notificationBuilder.show()
+        notificationBuilder.show(Notifications.ID_APP_UPDATE_PROMPT)
+    }
+
+    /**
+     * Some people are still installing the app from F-Droid, so we avoid prompting GitHub-based
+     * updates.
+     *
+     * We can prompt them to migrate to the GitHub version though.
+     */
+    fun promptFdroidUpdate() {
+        with(notificationBuilder) {
+            setContentTitle(context.stringResource(MR.strings.update_check_notification_update_available))
+            setContentText(context.stringResource(MR.strings.update_check_fdroid_migration_info))
+            setSmallIcon(R.drawable.ic_tachi)
+            setContentIntent(
+                NotificationHandler.openUrl(
+                    context,
+                    "https://tachiyomi.org/docs/faq/general#how-do-i-update-from-the-f-droid-builds",
+                ),
+            )
+        }
+        notificationBuilder.show(Notifications.ID_APP_UPDATE_PROMPT)
     }
 
     /**
@@ -122,7 +167,7 @@ internal class AppUpdateNotifier(private val context: Context) {
      */
     fun onDownloadError(url: String) {
         with(notificationBuilder) {
-            setContentText(context.getString(R.string.update_check_notification_download_error))
+            setContentText(context.stringResource(MR.strings.update_check_notification_download_error))
             setSmallIcon(R.drawable.ic_warning_white_24dp)
             setOnlyAlertOnce(false)
             setProgress(0, 0, false)
@@ -130,13 +175,13 @@ internal class AppUpdateNotifier(private val context: Context) {
             clearActions()
             addAction(
                 R.drawable.ic_refresh_24dp,
-                context.getString(R.string.action_retry),
-                AppUpdateService.downloadApkPendingService(context, url)
+                context.stringResource(MR.strings.action_retry),
+                NotificationReceiver.downloadAppUpdatePendingBroadcast(context, url),
             )
             addAction(
                 R.drawable.ic_close_24dp,
-                context.getString(R.string.action_cancel),
-                NotificationReceiver.dismissNotificationPendingBroadcast(context, Notifications.ID_APP_UPDATER)
+                context.stringResource(MR.strings.action_cancel),
+                NotificationReceiver.dismissNotificationPendingBroadcast(context, Notifications.ID_APP_UPDATER),
             )
         }
         notificationBuilder.show(Notifications.ID_APP_UPDATER)

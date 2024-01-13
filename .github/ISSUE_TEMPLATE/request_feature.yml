@@ -27,13 +27,13 @@ body:
       label: Acknowledgements
       description: Read this carefully, we will close and ignore your issue if you skimmed through this.
       options:
-        - label: I have searched the existing issues and this is a new ticket, **NOT** a duplicate or related to another open issue.
+        - label: I have searched the existing issues and this is a new ticket, **NOT** a duplicate or related to another open or closed issue.
           required: true
         - label: I have written a short but informative title.
           required: true
-        - label: If this is an issue with an extension, I should be opening an issue in the [extensions repository](https://github.com/tachiyomiorg/tachiyomi-extensions/issues/new/choose).
+        - label: If this is an issue with an official extension, I should be opening an issue in the [extensions repository](https://github.com/tachiyomiorg/extensions/issues/new/choose).
           required: true
-        - label: I have updated the app to version **[0.12.3](https://github.com/tachiyomiorg/tachiyomi/releases/latest)**.
+        - label: I have updated the app to version **[0.15.3](https://github.com/tachiyomiorg/tachiyomi/releases/latest)**.
           required: true
         - label: I will fill out all of the requested information in this form.
           required: true

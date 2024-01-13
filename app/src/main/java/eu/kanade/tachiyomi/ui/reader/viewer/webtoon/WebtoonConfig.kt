@@ -1,8 +1,9 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
-import eu.kanade.tachiyomi.data.preference.PreferencesHelper
+import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerConfig
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation
+import eu.kanade.tachiyomi.ui.reader.viewer.navigation.DisabledNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.EdgeNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.KindlishNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.LNavigation
@@ -20,8 +21,8 @@ import uy.kohesive.injekt.api.get
  */
 class WebtoonConfig(
     scope: CoroutineScope,
-    preferences: PreferencesHelper = Injekt.get()
-) : ViewerConfig(preferences, scope) {
+    readerPreferences: ReaderPreferences = Injekt.get(),
+) : ViewerConfig(readerPreferences, scope) {
 
     var themeChangedListener: (() -> Unit)? = null
 
@@ -31,32 +32,55 @@ class WebtoonConfig(
     var sidePadding = 0
         private set
 
-    val theme = preferences.readerTheme().get()
+    var doubleTapZoom = true
+        private set
+
+    var doubleTapZoomChangedListener: ((Boolean) -> Unit)? = null
+
+    val theme = readerPreferences.readerTheme().get()
 
     init {
-        preferences.cropBordersWebtoon()
+        readerPreferences.cropBordersWebtoon()
             .register({ imageCropBorders = it }, { imagePropertyChangedListener?.invoke() })
 
-        preferences.webtoonSidePadding()
+        readerPreferences.webtoonSidePadding()
             .register({ sidePadding = it }, { imagePropertyChangedListener?.invoke() })
 
-        preferences.navigationModeWebtoon()
+        readerPreferences.navigationModeWebtoon()
             .register({ navigationMode = it }, { updateNavigation(it) })
 
-        preferences.webtoonNavInverted()
+        readerPreferences.webtoonNavInverted()
             .register({ tappingInverted = it }, { navigator.invertMode = it })
-        preferences.webtoonNavInverted().asFlow()
+        readerPreferences.webtoonNavInverted().changes()
             .drop(1)
             .onEach { navigationModeChangedListener?.invoke() }
             .launchIn(scope)
 
-        preferences.dualPageSplitWebtoon()
+        readerPreferences.dualPageSplitWebtoon()
             .register({ dualPageSplit = it }, { imagePropertyChangedListener?.invoke() })
 
-        preferences.dualPageInvertWebtoon()
+        readerPreferences.dualPageInvertWebtoon()
             .register({ dualPageInvert = it }, { imagePropertyChangedListener?.invoke() })
 
-        preferences.readerTheme().asFlow()
+        readerPreferences.dualPageRotateToFitWebtoon()
+            .register(
+                { dualPageRotateToFit = it },
+                { imagePropertyChangedListener?.invoke() },
+            )
+
+        readerPreferences.dualPageRotateToFitInvertWebtoon()
+            .register(
+                { dualPageRotateToFitInvert = it },
+                { imagePropertyChangedListener?.invoke() },
+            )
+
+        readerPreferences.webtoonDoubleTapZoomEnabled()
+            .register(
+                { doubleTapZoom = it },
+                { doubleTapZoomChangedListener?.invoke(it) },
+            )
+
+        readerPreferences.readerTheme().changes()
             .drop(1)
             .distinctUntilChanged()
             .onEach { themeChangedListener?.invoke() }
@@ -79,6 +103,7 @@ class WebtoonConfig(
             2 -> KindlishNavigation()
             3 -> EdgeNavigation()
             4 -> RightAndLeftNavigation()
+            5 -> DisabledNavigation()
             else -> defaultNavigation()
         }
         navigationModeChangedListener?.invoke()

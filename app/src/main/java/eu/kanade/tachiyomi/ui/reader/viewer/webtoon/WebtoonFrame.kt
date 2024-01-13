@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
 import android.content.Context
+import android.graphics.Rect
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -25,6 +26,13 @@ class WebtoonFrame(context: Context) : FrameLayout(context) {
      */
     private val flingDetector = GestureDetector(context, FlingListener())
 
+    var doubleTapZoom = true
+        set(value) {
+            field = value
+            recycler?.doubleTapZoom = value
+            scaleDetector.isQuickScaleEnabled = value
+        }
+
     /**
      * Recycler view added in this frame.
      */
@@ -37,6 +45,22 @@ class WebtoonFrame(context: Context) : FrameLayout(context) {
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(ev)
         flingDetector.onTouchEvent(ev)
+
+        // Get the bounding box of the recyclerview and translate any motion events to be within it.
+        // Used to allow scrolling outside the recyclerview.
+        val recyclerRect = Rect()
+        recycler?.getHitRect(recyclerRect) ?: return super.dispatchTouchEvent(ev)
+        // Shrink the box to account for any rounding issues.
+        recyclerRect.inset(1, 1)
+
+        if (recyclerRect.right < recyclerRect.left || recyclerRect.bottom < recyclerRect.top) {
+            return super.dispatchTouchEvent(ev)
+        }
+
+        ev.setLocation(
+            ev.x.coerceIn(recyclerRect.left.toFloat(), recyclerRect.right.toFloat()),
+            ev.y.coerceIn(recyclerRect.top.toFloat(), recyclerRect.bottom.toFloat()),
+        )
         return super.dispatchTouchEvent(ev)
     }
 
@@ -44,7 +68,7 @@ class WebtoonFrame(context: Context) : FrameLayout(context) {
      * Scale listener used to delegate events to the recycler view.
      */
     inner class ScaleListener : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScaleBegin(detector: ScaleGestureDetector?): Boolean {
+        override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             recycler?.onScaleBegin()
             return true
         }
@@ -63,15 +87,15 @@ class WebtoonFrame(context: Context) : FrameLayout(context) {
      * Fling listener used to delegate events to the recycler view.
      */
     inner class FlingListener : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent?): Boolean {
+        override fun onDown(e: MotionEvent): Boolean {
             return true
         }
 
         override fun onFling(
             e1: MotionEvent?,
-            e2: MotionEvent?,
+            e2: MotionEvent,
             velocityX: Float,
-            velocityY: Float
+            velocityY: Float,
         ): Boolean {
             return recycler?.zoomFling(velocityX.toInt(), velocityY.toInt()) ?: false
         }

@@ -1,22 +1,19 @@
 package eu.kanade.tachiyomi.ui.reader.model
 
-import com.jakewharton.rxrelay.BehaviorRelay
+import eu.kanade.domain.chapter.model.toDbChapter
 import eu.kanade.tachiyomi.data.database.models.Chapter
 import eu.kanade.tachiyomi.ui.reader.loader.PageLoader
-import eu.kanade.tachiyomi.util.system.logcat
+import kotlinx.coroutines.flow.MutableStateFlow
+import tachiyomi.core.util.system.logcat
 
 data class ReaderChapter(val chapter: Chapter) {
 
-    var state: State =
-        State.Wait
+    val stateFlow = MutableStateFlow<State>(State.Wait)
+    var state: State
+        get() = stateFlow.value
         set(value) {
-                field = value
-                stateRelay.call(value)
-            }
-
-    private val stateRelay by lazy { BehaviorRelay.create(state) }
-
-    val stateObserver by lazy { stateRelay.asObservable() }
+            stateFlow.value = value
+        }
 
     val pages: List<ReaderPage>?
         get() = (state as? State.Loaded)?.pages
@@ -25,8 +22,9 @@ data class ReaderChapter(val chapter: Chapter) {
 
     var requestedPage: Int = 0
 
-    var references = 0
-        private set
+    private var references = 0
+
+    constructor(chapter: tachiyomi.domain.chapter.model.Chapter) : this(chapter.toDbChapter())
 
     fun ref() {
         references++
@@ -44,10 +42,10 @@ data class ReaderChapter(val chapter: Chapter) {
         }
     }
 
-    sealed class State {
-        object Wait : State()
-        object Loading : State()
-        class Error(val error: Throwable) : State()
-        class Loaded(val pages: List<ReaderPage>) : State()
+    sealed interface State {
+        data object Wait : State
+        data object Loading : State
+        data class Error(val error: Throwable) : State
+        data class Loaded(val pages: List<ReaderPage>) : State
     }
 }

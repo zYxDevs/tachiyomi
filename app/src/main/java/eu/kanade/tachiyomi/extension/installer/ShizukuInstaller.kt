@@ -3,10 +3,8 @@ package eu.kanade.tachiyomi.extension.installer
 import android.app.Service
 import android.content.pm.PackageManager
 import android.os.Build
-import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.extension.model.InstallStep
 import eu.kanade.tachiyomi.util.system.getUriSize
-import eu.kanade.tachiyomi.util.system.logcat
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,12 +13,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import logcat.LogPriority
 import rikka.shizuku.Shizuku
+import tachiyomi.core.util.system.logcat
+import tachiyomi.i18n.MR
 import java.io.BufferedReader
 import java.io.InputStream
 
 class ShizukuInstaller(private val service: Service) : Installer(service) {
 
-    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val shizukuDeadListener = Shizuku.OnBinderDeadListener {
         logcat { "Shizuku was killed prematurely" }
@@ -43,18 +43,17 @@ class ShizukuInstaller(private val service: Service) : Installer(service) {
 
     override var ready = false
 
-    @Suppress("BlockingMethodInNonBlockingContext")
     override fun processEntry(entry: Entry) {
         super.processEntry(entry)
-        ioScope.launch {
+        scope.launch {
             var sessionId: String? = null
             try {
                 val size = service.getUriSize(entry.uri) ?: throw IllegalStateException()
                 service.contentResolver.openInputStream(entry.uri)!!.use {
                     val createCommand = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        "pm install-create --user current -i ${service.packageName} -S $size"
+                        "pm install-create --user current -r -i ${service.packageName} -S $size"
                     } else {
-                        "pm install-create -i ${service.packageName} -S $size"
+                        "pm install-create -r -i ${service.packageName} -S $size"
                     }
                     val createResult = exec(createCommand)
                     sessionId = SESSION_ID_REGEX.find(createResult.out)?.value
@@ -88,7 +87,7 @@ class ShizukuInstaller(private val service: Service) : Installer(service) {
     override fun onDestroy() {
         Shizuku.removeBinderDeadListener(shizukuDeadListener)
         Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
-        ioScope.cancel()
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -116,8 +115,8 @@ class ShizukuInstaller(private val service: Service) : Installer(service) {
                 false
             }
         } else {
-            logcat(LogPriority.ERROR) { "Shizuku is not ready to use." }
-            service.toast(R.string.ext_installer_shizuku_stopped)
+            logcat(LogPriority.ERROR) { "Shizuku is not ready to use" }
+            service.toast(MR.strings.ext_installer_shizuku_stopped)
             service.stopSelf()
             false
         }

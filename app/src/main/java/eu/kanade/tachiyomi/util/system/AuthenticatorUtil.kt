@@ -10,6 +10,10 @@ import androidx.biometric.auth.AuthPromptCallback
 import androidx.biometric.auth.startClass2BiometricOrCredentialAuthentication
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import kotlinx.coroutines.suspendCancellableCoroutine
+import tachiyomi.core.i18n.stringResource
+import tachiyomi.i18n.MR
+import kotlin.coroutines.resume
 
 object AuthenticatorUtil {
 
@@ -31,7 +35,7 @@ object AuthenticatorUtil {
         title: String,
         subtitle: String? = null,
         confirmationRequired: Boolean = true,
-        callback: AuthenticationCallback
+        callback: AuthenticationCallback,
     ) {
         isAuthenticating = true
         startClass2BiometricOrCredentialAuthentication(
@@ -39,7 +43,41 @@ object AuthenticatorUtil {
             subtitle = subtitle,
             confirmationRequired = confirmationRequired,
             executor = ContextCompat.getMainExecutor(this),
-            callback = callback
+            callback = callback,
+        )
+    }
+
+    suspend fun FragmentActivity.authenticate(
+        title: String,
+        subtitle: String? = stringResource(MR.strings.confirm_lock_change),
+    ): Boolean = suspendCancellableCoroutine { cont ->
+        if (!isAuthenticationSupported()) {
+            cont.resume(true)
+            return@suspendCancellableCoroutine
+        }
+
+        startAuthentication(
+            title,
+            subtitle,
+            callback = object : AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(
+                    activity: FragmentActivity?,
+                    result: BiometricPrompt.AuthenticationResult,
+                ) {
+                    super.onAuthenticationSucceeded(activity, result)
+                    cont.resume(true)
+                }
+
+                override fun onAuthenticationError(
+                    activity: FragmentActivity?,
+                    errorCode: Int,
+                    errString: CharSequence,
+                ) {
+                    super.onAuthenticationError(activity, errorCode, errString)
+                    activity?.toast(errString.toString())
+                    cont.resume(false)
+                }
+            },
         )
     }
 
@@ -72,7 +110,7 @@ object AuthenticatorUtil {
         override fun onAuthenticationError(
             activity: FragmentActivity?,
             @AuthenticationError errorCode: Int,
-            errString: CharSequence
+            errString: CharSequence,
         ) {
             isAuthenticating = false
         }
@@ -90,18 +128,8 @@ object AuthenticatorUtil {
         @CallSuper
         override fun onAuthenticationSucceeded(
             activity: FragmentActivity?,
-            result: BiometricPrompt.AuthenticationResult
+            result: BiometricPrompt.AuthenticationResult,
         ) {
-            isAuthenticating = false
-        }
-
-        /**
-         * Called when an authentication attempt by the user has been rejected.
-         *
-         * @param activity The activity that is currently hosting the prompt.
-         */
-        @CallSuper
-        override fun onAuthenticationFailed(activity: FragmentActivity?) {
             isAuthenticating = false
         }
     }

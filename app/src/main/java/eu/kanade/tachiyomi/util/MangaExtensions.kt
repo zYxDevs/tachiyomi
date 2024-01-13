@@ -1,79 +1,91 @@
 package eu.kanade.tachiyomi.util
 
+import eu.kanade.domain.manga.interactor.UpdateManga
+import eu.kanade.domain.manga.model.hasCustomCover
+import eu.kanade.domain.manga.model.toSManga
 import eu.kanade.tachiyomi.data.cache.CoverCache
-import eu.kanade.tachiyomi.data.database.DatabaseHelper
-import eu.kanade.tachiyomi.data.database.models.Manga
-import eu.kanade.tachiyomi.data.preference.PreferencesHelper
-import eu.kanade.tachiyomi.source.LocalSource
 import eu.kanade.tachiyomi.source.model.SManga
-import java.util.Date
-
-fun Manga.isLocal() = source == LocalSource.ID
+import tachiyomi.domain.download.service.DownloadPreferences
+import tachiyomi.domain.manga.model.Manga
+import tachiyomi.source.local.image.LocalCoverManager
+import tachiyomi.source.local.isLocal
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+import java.io.InputStream
+import java.time.Instant
 
 /**
  * Call before updating [Manga.thumbnail_url] to ensure old cover can be cleared from cache
  */
-fun Manga.prepUpdateCover(coverCache: CoverCache, remoteManga: SManga, refreshSameUrl: Boolean) {
+fun Manga.prepUpdateCover(coverCache: CoverCache, remoteManga: SManga, refreshSameUrl: Boolean): Manga {
     // Never refresh covers if the new url is null, as the current url has possibly become invalid
-    val newUrl = remoteManga.thumbnail_url ?: return
+    val newUrl = remoteManga.thumbnail_url ?: return this
 
     // Never refresh covers if the url is empty to avoid "losing" existing covers
-    if (newUrl.isEmpty()) return
+    if (newUrl.isEmpty()) return this
 
-    if (!refreshSameUrl && thumbnail_url == newUrl) return
+    if (!refreshSameUrl && thumbnailUrl == newUrl) return this
 
-    when {
+    return when {
         isLocal() -> {
-            cover_last_modified = Date().time
+            this.copy(coverLastModified = Instant.now().toEpochMilli())
         }
         hasCustomCover(coverCache) -> {
             coverCache.deleteFromCache(this, false)
+            this
         }
         else -> {
-            cover_last_modified = Date().time
             coverCache.deleteFromCache(this, false)
+            this.copy(coverLastModified = Instant.now().toEpochMilli())
         }
     }
 }
 
-fun Manga.hasCustomCover(coverCache: CoverCache): Boolean {
-    return coverCache.getCustomCoverFile(this).exists()
+fun Manga.removeCovers(coverCache: CoverCache = Injekt.get()): Manga {
+    if (isLocal()) return this
+    return if (coverCache.deleteFromCache(this, true) > 0) {
+        return copy(coverLastModified = Instant.now().toEpochMilli())
+    } else {
+        this
+    }
 }
 
-fun Manga.removeCovers(coverCache: CoverCache) {
-    if (isLocal()) return
-
-    cover_last_modified = Date().time
-    coverCache.deleteFromCache(this, true)
-}
-
-fun Manga.updateCoverLastModified(db: DatabaseHelper) {
-    cover_last_modified = Date().time
-    db.updateMangaCoverLastModified(this).executeAsBlocking()
-}
-
-fun Manga.shouldDownloadNewChapters(db: DatabaseHelper, prefs: PreferencesHelper): Boolean {
+fun Manga.shouldDownloadNewChapters(dbCategories: List<Long>, preferences: DownloadPreferences): Boolean {
     if (!favorite) return false
 
+    val categories = dbCategories.ifEmpty { listOf(0L) }
+
     // Boolean to determine if user wants to automatically download new chapters.
-    val downloadNew = prefs.downloadNew().get()
-    if (!downloadNew) return false
+    val downloadNewChapters = preferences.downloadNewChapters().get()
+    if (!downloadNewChapters) return false
 
-    val categoriesToDownload = prefs.downloadNewCategories().get().map(String::toInt)
-    val categoriesToExclude = prefs.downloadNewCategoriesExclude().get().map(String::toInt)
+    val includedCategories = preferences.downloadNewChapterCategories().get().map { it.toLong() }
+    val excludedCategories = preferences.downloadNewChapterCategoriesExclude().get().map { it.toLong() }
 
-    // Default: download from all categories
-    if (categoriesToDownload.isEmpty() && categoriesToExclude.isEmpty()) return true
-
-    // Get all categories, else default category (0)
-    val categoriesForManga =
-        db.getCategoriesForManga(this).executeAsBlocking()
-            .mapNotNull { it.id }
-            .takeUnless { it.isEmpty() } ?: listOf(0)
+    // Default: Download from all categories
+    if (includedCategories.isEmpty() && excludedCategories.isEmpty()) return true
 
     // In excluded category
-    if (categoriesForManga.intersect(categoriesToExclude).isNotEmpty()) return false
+    if (categories.any { it in excludedCategories }) return false
+
+    // Included category not selected
+    if (includedCategories.isEmpty()) return true
 
     // In included category
-    return categoriesForManga.intersect(categoriesToDownload).isNotEmpty()
+    return categories.any { it in includedCategories }
+}
+
+suspend fun Manga.editCover(
+    coverManager: LocalCoverManager,
+    stream: InputStream,
+    updateManga: UpdateManga = Injekt.get(),
+    coverCache: CoverCache = Injekt.get(),
+) {
+    if (isLocal()) {
+        coverManager.update(toSManga(), stream)
+        updateManga.awaitUpdateCoverLastModified(id)
+    } else if (favorite) {
+        coverCache.setCustomCoverToCache(this, stream)
+        updateManga.awaitUpdateCoverLastModified(id)
+    }
 }

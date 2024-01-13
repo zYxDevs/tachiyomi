@@ -5,8 +5,7 @@ import com.github.junrar.rarfile.FileHeader
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.util.lang.compareToCaseInsensitiveNaturalOrder
-import eu.kanade.tachiyomi.util.system.ImageUtil
-import rx.Observable
+import tachiyomi.core.util.system.ImageUtil
 import java.io.File
 import java.io.InputStream
 import java.io.PipedInputStream
@@ -16,57 +15,38 @@ import java.util.concurrent.Executors
 /**
  * Loader used to load a chapter from a .rar or .cbr file.
  */
-class RarPageLoader(file: File) : PageLoader() {
+internal class RarPageLoader(file: File) : PageLoader() {
 
-    /**
-     * The rar archive to load pages from.
-     */
-    private val archive = Archive(file)
+    private val rar = Archive(file)
+
+    override var isLocal: Boolean = true
 
     /**
      * Pool for copying compressed files to an input stream.
      */
     private val pool = Executors.newFixedThreadPool(1)
 
-    /**
-     * Recycles this loader and the open archive.
-     */
-    override fun recycle() {
-        super.recycle()
-        archive.close()
-        pool.shutdown()
-    }
-
-    /**
-     * Returns an observable containing the pages found on this rar archive ordered with a natural
-     * comparator.
-     */
-    override fun getPages(): Observable<List<ReaderPage>> {
-        return archive.fileHeaders
-            .filter { !it.isDirectory && ImageUtil.isImage(it.fileName) { archive.getInputStream(it) } }
+    override suspend fun getPages(): List<ReaderPage> {
+        return rar.fileHeaders.asSequence()
+            .filter { !it.isDirectory && ImageUtil.isImage(it.fileName) { rar.getInputStream(it) } }
             .sortedWith { f1, f2 -> f1.fileName.compareToCaseInsensitiveNaturalOrder(f2.fileName) }
             .mapIndexed { i, header ->
-                val streamFn = { getStream(header) }
-
                 ReaderPage(i).apply {
-                    stream = streamFn
-                    status = Page.READY
+                    stream = { getStream(header) }
+                    status = Page.State.READY
                 }
             }
-            .let { Observable.just(it) }
+            .toList()
     }
 
-    /**
-     * Returns an observable that emits a ready state unless the loader was recycled.
-     */
-    override fun getPage(page: ReaderPage): Observable<Int> {
-        return Observable.just(
-            if (isRecycled) {
-                Page.ERROR
-            } else {
-                Page.READY
-            }
-        )
+    override suspend fun loadPage(page: ReaderPage) {
+        check(!isRecycled)
+    }
+
+    override fun recycle() {
+        super.recycle()
+        rar.close()
+        pool.shutdown()
     }
 
     /**
@@ -78,7 +58,7 @@ class RarPageLoader(file: File) : PageLoader() {
         pool.execute {
             try {
                 pipeOut.use {
-                    archive.extractFile(header, it)
+                    rar.extractFile(header, it)
                 }
             } catch (e: Exception) {
             }

@@ -3,29 +3,30 @@ package eu.kanade.tachiyomi.ui.security
 import android.os.Bundle
 import androidx.biometric.BiometricPrompt
 import androidx.fragment.app.FragmentActivity
-import eu.kanade.tachiyomi.R
-import eu.kanade.tachiyomi.ui.base.activity.BaseThemedActivity
+import eu.kanade.tachiyomi.ui.base.activity.BaseActivity
+import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegate
 import eu.kanade.tachiyomi.util.system.AuthenticatorUtil
 import eu.kanade.tachiyomi.util.system.AuthenticatorUtil.startAuthentication
-import eu.kanade.tachiyomi.util.system.logcat
 import logcat.LogPriority
-import java.util.Date
+import tachiyomi.core.i18n.stringResource
+import tachiyomi.core.util.system.logcat
+import tachiyomi.i18n.MR
 
 /**
  * Blank activity with a BiometricPrompt.
  */
-class UnlockActivity : BaseThemedActivity() {
+class UnlockActivity : BaseActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         startAuthentication(
-            getString(R.string.unlock_app),
+            stringResource(MR.strings.unlock_app_title, stringResource(MR.strings.app_name)),
             confirmationRequired = false,
             callback = object : AuthenticatorUtil.AuthenticationCallback() {
                 override fun onAuthenticationError(
                     activity: FragmentActivity?,
                     errorCode: Int,
-                    errString: CharSequence
+                    errString: CharSequence,
                 ) {
                     super.onAuthenticationError(activity, errorCode, errString)
                     logcat(LogPriority.ERROR) { errString.toString() }
@@ -34,14 +35,13 @@ class UnlockActivity : BaseThemedActivity() {
 
                 override fun onAuthenticationSucceeded(
                     activity: FragmentActivity?,
-                    result: BiometricPrompt.AuthenticationResult
+                    result: BiometricPrompt.AuthenticationResult,
                 ) {
                     super.onAuthenticationSucceeded(activity, result)
-                    SecureActivityDelegate.locked = false
-                    preferences.lastAppUnlock().set(Date().time)
+                    SecureActivityDelegate.unlock()
                     finish()
                 }
-            }
+            },
         )
     }
 }

@@ -2,31 +2,30 @@ package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.view.Gravity
-import android.view.ViewGroup
-import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.LinearLayout
-import android.widget.TextView
+import android.view.LayoutInflater
 import androidx.core.view.isVisible
-import androidx.core.view.setMargins
-import androidx.core.view.updateLayoutParams
-import eu.kanade.tachiyomi.R
+import eu.kanade.tachiyomi.databinding.ReaderErrorBinding
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.ui.reader.model.InsertPage
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
-import eu.kanade.tachiyomi.util.system.ImageUtil
-import eu.kanade.tachiyomi.util.system.dpToPx
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
-import rx.Observable
-import rx.Subscription
-import rx.android.schedulers.AndroidSchedulers
-import rx.schedulers.Schedulers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import logcat.LogPriority
+import tachiyomi.core.util.lang.launchIO
+import tachiyomi.core.util.lang.withIOContext
+import tachiyomi.core.util.lang.withUIContext
+import tachiyomi.core.util.system.ImageUtil
+import tachiyomi.core.util.system.logcat
+import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
 import java.io.InputStream
-import java.util.concurrent.TimeUnit
 
 /**
  * View of the ViewPager that contains a page of a chapter.
@@ -35,7 +34,7 @@ import java.util.concurrent.TimeUnit
 class PagerPageHolder(
     readerThemedContext: Context,
     val viewer: PagerViewer,
-    val page: ReaderPage
+    val page: ReaderPage,
 ) : ReaderPageImageView(readerThemedContext), ViewPagerAdapter.PositionableView {
 
     /**
@@ -47,41 +46,23 @@ class PagerPageHolder(
     /**
      * Loading progress bar to indicate the current progress.
      */
-    private val progressIndicator: ReaderProgressIndicator = ReaderProgressIndicator(readerThemedContext).apply {
-        updateLayoutParams<LayoutParams> {
-            gravity = Gravity.CENTER
-        }
-    }
+    private val progressIndicator: ReaderProgressIndicator = ReaderProgressIndicator(readerThemedContext)
 
     /**
-     * Retry button used to allow retrying.
+     * Error layout to show when the image fails to load.
      */
-    private var retryButton: PagerButton? = null
+    private var errorLayout: ReaderErrorBinding? = null
+
+    private val scope = MainScope()
 
     /**
-     * Error layout to show when the image fails to decode.
+     * Job for loading the page and processing changes to the page's status.
      */
-    private var decodeErrorLayout: ViewGroup? = null
-
-    /**
-     * Subscription for status changes of the page.
-     */
-    private var statusSubscription: Subscription? = null
-
-    /**
-     * Subscription for progress changes of the page.
-     */
-    private var progressSubscription: Subscription? = null
-
-    /**
-     * Subscription used to read the header of the image. This is needed in order to instantiate
-     * the appropiate image view depending if the image is animated (GIF).
-     */
-    private var readImageHeaderSubscription: Subscription? = null
+    private var loadJob: Job? = null
 
     init {
         addView(progressIndicator)
-        observeStatus()
+        loadJob = scope.launch { loadPageAndProcessStatus() }
     }
 
     /**
@@ -90,85 +71,39 @@ class PagerPageHolder(
     @SuppressLint("ClickableViewAccessibility")
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        unsubscribeProgress()
-        unsubscribeStatus()
-        unsubscribeReadImageHeader()
+        loadJob?.cancel()
+        loadJob = null
     }
 
     /**
-     * Observes the status of the page and notify the changes.
+     * Loads the page and processes changes to the page's status.
      *
-     * @see processStatus
+     * Returns immediately if the page has no PageLoader.
+     * Otherwise, this function does not return. It will continue to process status changes until
+     * the Job is cancelled.
      */
-    private fun observeStatus() {
-        statusSubscription?.unsubscribe()
-
+    private suspend fun loadPageAndProcessStatus() {
         val loader = page.chapter.pageLoader ?: return
-        statusSubscription = loader.getPage(page)
-            .observeOn(AndroidSchedulers.mainThread())
-            .subscribe { processStatus(it) }
-    }
 
-    /**
-     * Observes the progress of the page and updates view.
-     */
-    private fun observeProgress() {
-        progressSubscription?.unsubscribe()
-
-        progressSubscription = Observable.interval(100, TimeUnit.MILLISECONDS)
-            .map { page.progress }
-            .distinctUntilChanged()
-            .onBackpressureLatest()
-            .observeOn(AndroidSchedulers.mainThread())
-            .subscribe { value -> progressIndicator.setProgress(value) }
-    }
-
-    /**
-     * Called when the status of the page changes.
-     *
-     * @param status the new status of the page.
-     */
-    private fun processStatus(status: Int) {
-        when (status) {
-            Page.QUEUE -> setQueued()
-            Page.LOAD_PAGE -> setLoading()
-            Page.DOWNLOAD_IMAGE -> {
-                observeProgress()
-                setDownloading()
+        supervisorScope {
+            launchIO {
+                loader.loadPage(page)
             }
-            Page.READY -> {
-                setImage()
-                unsubscribeProgress()
-            }
-            Page.ERROR -> {
-                setError()
-                unsubscribeProgress()
+            page.statusFlow.collectLatest { state ->
+                when (state) {
+                    Page.State.QUEUE -> setQueued()
+                    Page.State.LOAD_PAGE -> setLoading()
+                    Page.State.DOWNLOAD_IMAGE -> {
+                        setDownloading()
+                        page.progressFlow.collectLatest { value ->
+                            progressIndicator.setProgress(value)
+                        }
+                    }
+                    Page.State.READY -> setImage()
+                    Page.State.ERROR -> setError()
+                }
             }
         }
-    }
-
-    /**
-     * Unsubscribes from the status subscription.
-     */
-    private fun unsubscribeStatus() {
-        statusSubscription?.unsubscribe()
-        statusSubscription = null
-    }
-
-    /**
-     * Unsubscribes from the progress subscription.
-     */
-    private fun unsubscribeProgress() {
-        progressSubscription?.unsubscribe()
-        progressSubscription = null
-    }
-
-    /**
-     * Unsubscribes from the read image header subscription.
-     */
-    private fun unsubscribeReadImageHeader() {
-        readImageHeaderSubscription?.unsubscribe()
-        readImageHeaderSubscription = null
     }
 
     /**
@@ -176,8 +111,7 @@ class PagerPageHolder(
      */
     private fun setQueued() {
         progressIndicator.show()
-        retryButton?.isVisible = false
-        decodeErrorLayout?.isVisible = false
+        removeErrorLayout()
     }
 
     /**
@@ -185,8 +119,7 @@ class PagerPageHolder(
      */
     private fun setLoading() {
         progressIndicator.show()
-        retryButton?.isVisible = false
-        decodeErrorLayout?.isVisible = false
+        removeErrorLayout()
     }
 
     /**
@@ -194,44 +127,35 @@ class PagerPageHolder(
      */
     private fun setDownloading() {
         progressIndicator.show()
-        retryButton?.isVisible = false
-        decodeErrorLayout?.isVisible = false
+        removeErrorLayout()
     }
 
     /**
      * Called when the page is ready.
      */
-    private fun setImage() {
-        progressIndicator.hide()
-        retryButton?.isVisible = false
-        decodeErrorLayout?.isVisible = false
+    private suspend fun setImage() {
+        progressIndicator.setProgress(0)
 
-        unsubscribeReadImageHeader()
         val streamFn = page.stream ?: return
 
-        readImageHeaderSubscription = Observable
-            .fromCallable {
-                val stream = streamFn().buffered(16)
-                val itemStream = process(item, stream)
-                val bais = ByteArrayInputStream(itemStream.readBytes())
-                try {
-                    val isAnimated = ImageUtil.isAnimatedAndSupported(bais)
-                    bais.reset()
-                    val background = if (!isAnimated && viewer.config.automaticBackground) {
-                        ImageUtil.chooseBackground(context, bais)
-                    } else {
-                        null
+        try {
+            val (bais, isAnimated, background) = withIOContext {
+                streamFn().buffered(16).use { stream ->
+                    process(item, stream).use { itemStream ->
+                        val bais = ByteArrayInputStream(itemStream.readBytes())
+                        val isAnimated = ImageUtil.isAnimatedAndSupported(bais)
+                        bais.reset()
+                        val background = if (!isAnimated && viewer.config.automaticBackground) {
+                            ImageUtil.chooseBackground(context, bais)
+                        } else {
+                            null
+                        }
+                        bais.reset()
+                        Triple(bais, isAnimated, background)
                     }
-                    bais.reset()
-                    Triple(bais, isAnimated, background)
-                } finally {
-                    stream.close()
-                    itemStream.close()
                 }
             }
-            .subscribeOn(Schedulers.io())
-            .observeOn(AndroidSchedulers.mainThread())
-            .doOnNext { (bais, isAnimated, background) ->
+            withUIContext {
                 bais.use {
                     setImage(
                         it,
@@ -240,18 +164,29 @@ class PagerPageHolder(
                             zoomDuration = viewer.config.doubleTapAnimDuration,
                             minimumScaleType = viewer.config.imageScaleType,
                             cropBorders = viewer.config.imageCropBorders,
-                            zoomStartPosition = viewer.config.imageZoomType
-                        )
+                            zoomStartPosition = viewer.config.imageZoomType,
+                            landscapeZoom = viewer.config.landscapeZoom,
+                        ),
                     )
                     if (!isAnimated) {
-                        this.background = background
+                        pageBackground = background
                     }
                 }
+                removeErrorLayout()
             }
-            .subscribe({}, {})
+        } catch (e: Throwable) {
+            logcat(LogPriority.ERROR, e)
+            withUIContext {
+                setError()
+            }
+        }
     }
 
-    private fun process(page: ReaderPage, imageStream: InputStream): InputStream {
+    private fun process(page: ReaderPage, imageStream: BufferedInputStream): InputStream {
+        if (viewer.config.dualPageRotateToFit) {
+            return rotateDualPage(imageStream)
+        }
+
         if (!viewer.config.dualPageSplit) {
             return imageStream
         }
@@ -260,7 +195,7 @@ class PagerPageHolder(
             return splitInHalf(imageStream)
         }
 
-        val isDoublePage = ImageUtil.isDoublePage(imageStream)
+        val isDoublePage = ImageUtil.isWideImage(imageStream)
         if (!isDoublePage) {
             return imageStream
         }
@@ -268,6 +203,16 @@ class PagerPageHolder(
         onPageSplit(page)
 
         return splitInHalf(imageStream)
+    }
+
+    private fun rotateDualPage(imageStream: BufferedInputStream): InputStream {
+        val isDoublePage = ImageUtil.isWideImage(imageStream)
+        return if (isDoublePage) {
+            val rotation = if (viewer.config.dualPageRotateToFitInvert) -90f else 90f
+            ImageUtil.rotateImage(imageStream, rotation)
+        } else {
+            imageStream
+        }
     }
 
     private fun splitInHalf(imageStream: InputStream): InputStream {
@@ -299,7 +244,12 @@ class PagerPageHolder(
      */
     private fun setError() {
         progressIndicator.hide()
-        initRetryButton().isVisible = true
+        showErrorLayout()
+    }
+
+    override fun onImageLoaded() {
+        super.onImageLoaded()
+        progressIndicator.hide()
     }
 
     /**
@@ -307,8 +257,7 @@ class PagerPageHolder(
      */
     override fun onImageLoadError() {
         super.onImageLoadError()
-        progressIndicator.hide()
-        initDecodeErrorLayout().isVisible = true
+        setError()
     }
 
     /**
@@ -319,78 +268,36 @@ class PagerPageHolder(
         viewer.activity.hideMenu()
     }
 
-    /**
-     * Initializes a button to retry pages.
-     */
-    private fun initRetryButton(): PagerButton {
-        if (retryButton != null) return retryButton!!
-
-        retryButton = PagerButton(context, viewer).apply {
-            layoutParams = LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                gravity = Gravity.CENTER
-            }
-            setText(R.string.action_retry)
-            setOnClickListener {
+    private fun showErrorLayout(): ReaderErrorBinding {
+        if (errorLayout == null) {
+            errorLayout = ReaderErrorBinding.inflate(LayoutInflater.from(context), this, true)
+            errorLayout?.actionRetry?.viewer = viewer
+            errorLayout?.actionRetry?.setOnClickListener {
                 page.chapter.pageLoader?.retryPage(page)
             }
-        }
-        addView(retryButton)
-        return retryButton!!
-    }
-
-    /**
-     * Initializes a decode error layout.
-     */
-    private fun initDecodeErrorLayout(): ViewGroup {
-        if (decodeErrorLayout != null) return decodeErrorLayout!!
-
-        val margins = 8.dpToPx
-
-        val decodeLayout = LinearLayout(context).apply {
-            gravity = Gravity.CENTER
-            orientation = LinearLayout.VERTICAL
-        }
-        decodeErrorLayout = decodeLayout
-
-        TextView(context).apply {
-            layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                setMargins(margins)
-            }
-            gravity = Gravity.CENTER
-            setText(R.string.decode_image_error)
-
-            decodeLayout.addView(this)
-        }
-
-        PagerButton(context, viewer).apply {
-            layoutParams = LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                setMargins(margins)
-            }
-            setText(R.string.action_retry)
-            setOnClickListener {
-                page.chapter.pageLoader?.retryPage(page)
-            }
-
-            decodeLayout.addView(this)
         }
 
         val imageUrl = page.imageUrl
-        if (imageUrl.orEmpty().startsWith("http", true)) {
-            PagerButton(context, viewer).apply {
-                layoutParams = LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                    setMargins(margins)
-                }
-                setText(R.string.action_open_in_web_view)
-                setOnClickListener {
-                    val intent = WebViewActivity.newIntent(context, imageUrl!!)
+        errorLayout?.actionOpenInWebView?.isVisible = imageUrl != null
+        if (imageUrl != null) {
+            if (imageUrl.startsWith("http", true)) {
+                errorLayout?.actionOpenInWebView?.viewer = viewer
+                errorLayout?.actionOpenInWebView?.setOnClickListener {
+                    val intent = WebViewActivity.newIntent(context, imageUrl)
                     context.startActivity(intent)
                 }
-
-                decodeLayout.addView(this)
             }
         }
 
-        addView(decodeLayout)
-        return decodeLayout
+        errorLayout?.root?.isVisible = true
+        return errorLayout!!
+    }
+
+    /**
+     * Removes the decode error layout from the holder, if found.
+     */
+    private fun removeErrorLayout() {
+        errorLayout?.root?.isVisible = false
+        errorLayout = null
     }
 }

@@ -6,8 +6,16 @@
         android:title="@string/action_move_to_top" />
 
     <item
+        android:id="@+id/move_to_top_series"
+        android:title="@string/action_move_to_top_all_for_series" />
+
+    <item
         android:id="@+id/move_to_bottom"
         android:title="@string/action_move_to_bottom" />
+
+    <item
+        android:id="@+id/move_to_bottom_series"
+        android:title="@string/action_move_to_bottom_all_for_series" />
 
     <item
         android:id="@+id/cancel_download"

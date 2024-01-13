@@ -1,9 +1,10 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
-import eu.kanade.tachiyomi.data.preference.PreferencesHelper
+import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerConfig
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation
+import eu.kanade.tachiyomi.ui.reader.viewer.navigation.DisabledNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.EdgeNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.KindlishNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.LNavigation
@@ -21,10 +22,10 @@ import uy.kohesive.injekt.api.get
 class PagerConfig(
     private val viewer: PagerViewer,
     scope: CoroutineScope,
-    preferences: PreferencesHelper = Injekt.get()
-) : ViewerConfig(preferences, scope) {
+    readerPreferences: ReaderPreferences = Injekt.get(),
+) : ViewerConfig(readerPreferences, scope) {
 
-    var theme = preferences.readerTheme().get()
+    var theme = readerPreferences.readerTheme().get()
         private set
 
     var automaticBackground = false
@@ -41,46 +42,70 @@ class PagerConfig(
     var imageCropBorders = false
         private set
 
+    var navigateToPan = false
+        private set
+
+    var landscapeZoom = false
+        private set
+
     init {
-        preferences.readerTheme()
+        readerPreferences.readerTheme()
             .register(
                 {
                     theme = it
                     automaticBackground = it == 3
                 },
-                { imagePropertyChangedListener?.invoke() }
+                { imagePropertyChangedListener?.invoke() },
             )
 
-        preferences.imageScaleType()
+        readerPreferences.imageScaleType()
             .register({ imageScaleType = it }, { imagePropertyChangedListener?.invoke() })
 
-        preferences.zoomStart()
+        readerPreferences.zoomStart()
             .register({ zoomTypeFromPreference(it) }, { imagePropertyChangedListener?.invoke() })
 
-        preferences.cropBorders()
+        readerPreferences.cropBorders()
             .register({ imageCropBorders = it }, { imagePropertyChangedListener?.invoke() })
 
-        preferences.navigationModePager()
+        readerPreferences.navigateToPan()
+            .register({ navigateToPan = it })
+
+        readerPreferences.landscapeZoom()
+            .register({ landscapeZoom = it }, { imagePropertyChangedListener?.invoke() })
+
+        readerPreferences.navigationModePager()
             .register({ navigationMode = it }, { updateNavigation(navigationMode) })
 
-        preferences.pagerNavInverted()
+        readerPreferences.pagerNavInverted()
             .register({ tappingInverted = it }, { navigator.invertMode = it })
-        preferences.pagerNavInverted().asFlow()
+        readerPreferences.pagerNavInverted().changes()
             .drop(1)
             .onEach { navigationModeChangedListener?.invoke() }
             .launchIn(scope)
 
-        preferences.dualPageSplitPaged()
+        readerPreferences.dualPageSplitPaged()
             .register(
                 { dualPageSplit = it },
                 {
                     imagePropertyChangedListener?.invoke()
                     dualPageSplitChangedListener?.invoke(it)
-                }
+                },
             )
 
-        preferences.dualPageInvertPaged()
+        readerPreferences.dualPageInvertPaged()
             .register({ dualPageInvert = it }, { imagePropertyChangedListener?.invoke() })
+
+        readerPreferences.dualPageRotateToFit()
+            .register(
+                { dualPageRotateToFit = it },
+                { imagePropertyChangedListener?.invoke() },
+            )
+
+        readerPreferences.dualPageRotateToFitInvert()
+            .register(
+                { dualPageRotateToFitInvert = it },
+                { imagePropertyChangedListener?.invoke() },
+            )
     }
 
     private fun zoomTypeFromPreference(value: Int) {
@@ -119,6 +144,7 @@ class PagerConfig(
             2 -> KindlishNavigation()
             3 -> EdgeNavigation()
             4 -> RightAndLeftNavigation()
+            5 -> DisabledNavigation()
             else -> defaultNavigation()
         }
         navigationModeChangedListener?.invoke()
